@@ -20,6 +20,7 @@
 #include<algorithm>
 #include<fstream>
 #include<chrono>
+#include<cstdlib>
 
 #include<opencv2/core/core.hpp>
 
@@ -59,7 +60,11 @@ int main(int argc, char **argv)
     }
 
     // Create SLAM system. It initializes all system threads and gets ready to process frames.
-    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,true);
+    bool bUseViewer = true;
+    const char* disableViewerEnv = std::getenv("ORB3_DISABLE_VIEWER");
+    if(disableViewerEnv && std::string(disableViewerEnv) == "1")
+        bUseViewer = false;
+    ORB_SLAM3::System SLAM(argv[1],argv[2],ORB_SLAM3::System::RGBD,bUseViewer);
     float imageScale = SLAM.GetImageScale();
 
     // Vector for tracking time statistics
@@ -85,6 +90,12 @@ int main(int argc, char **argv)
                  << string(argv[3]) << "/" << vstrImageFilenamesRGB[ni] << endl;
             return 1;
         }
+        if(imD.empty())
+        {
+            cerr << endl << "Failed to load Depth at: "
+                 << string(argv[3]) << "/" << vstrImageFilenamesD[ni] << endl;
+            return 1;
+        }
 
         if(imageScale != 1.f)
         {
@@ -94,7 +105,7 @@ int main(int argc, char **argv)
             cv::resize(imD, imD, cv::Size(width, height));
         }
 
-#ifdef COMPILEDWITHC11
+#ifdef COMPILEDWITHC17
         std::chrono::steady_clock::time_point t1 = std::chrono::steady_clock::now();
 #else
         std::chrono::monotonic_clock::time_point t1 = std::chrono::monotonic_clock::now();
@@ -103,7 +114,7 @@ int main(int argc, char **argv)
         // Pass the image to the SLAM system
         SLAM.TrackRGBD(imRGB,imD,tframe);
 
-#ifdef COMPILEDWITHC11
+#ifdef COMPILEDWITHC17
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
 #else
         std::chrono::monotonic_clock::time_point t2 = std::chrono::monotonic_clock::now();
@@ -150,24 +161,30 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
 {
     ifstream fAssociation;
     fAssociation.open(strAssociationFilename.c_str());
-    while(!fAssociation.eof())
+    if (!fAssociation.is_open())
     {
-        string s;
-        getline(fAssociation,s);
-        if(!s.empty())
-        {
-            stringstream ss;
-            ss << s;
-            double t;
-            string sRGB, sD;
-            ss >> t;
-            vTimestamps.push_back(t);
-            ss >> sRGB;
-            vstrImageFilenamesRGB.push_back(sRGB);
-            ss >> t;
-            ss >> sD;
-            vstrImageFilenamesD.push_back(sD);
+        cerr << endl << "Failed to open association file: " << strAssociationFilename << endl;
+        return;
+    }
 
+    string s;
+    while(getline(fAssociation, s))
+    {
+        if(s.empty())
+        {
+            continue;
         }
+
+        stringstream ss;
+        ss << s;
+        double t;
+        string sRGB, sD;
+        ss >> t;
+        vTimestamps.push_back(t);
+        ss >> sRGB;
+        vstrImageFilenamesRGB.push_back(sRGB);
+        ss >> t;
+        ss >> sD;
+        vstrImageFilenamesD.push_back(sD);
     }
 }

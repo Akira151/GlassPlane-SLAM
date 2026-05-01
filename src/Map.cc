@@ -541,4 +541,60 @@ void Map::PostLoad(KeyFrameDatabase *pKFDB, ORBVocabulary *pORBVoc /*, map<long 
     mvpBackupMapPoints.clear();
 }
 
+
+// FW:
+void Map::add_landmark_plane(Plane *pl)
+{
+    unique_lock<mutex> lock(mMutexMap);
+    // Plane的_id在调用Plane()构造函数的时候是自增的。所以不用管这个id的整理。
+    _landmarks_plane[pl->_id] = std::move(pl);
+}
+
+// FW:
+std::vector<Plane *> Map::get_all_landmark_planes() const
+{
+    unique_lock<mutex> lock(mMutexMap);
+    std::vector<Plane *> all_planes;
+    if (!_landmarks_plane.empty())
+    {
+        all_planes.reserve(_landmarks_plane.size());
+        for (auto id_plane : _landmarks_plane)
+        {
+            all_planes.push_back(id_plane.second);
+        }
+    }
+    return all_planes;
+}
+
+// FW:
+std::unordered_map<unsigned int, Plane *> Map::get_all_landmark_planes_unordered_map() const
+{
+    unique_lock<mutex> lock(mMutexMap);
+    return _landmarks_plane;
+}
+
+// FW:
+void Map::erase_landmark_plane(Plane *pl)
+{
+    unique_lock<mutex> lock(mMutexMap);
+    _landmarks_plane.erase(pl->_id);
+}
+
+// FW:
+void Map::erase_landmark_plane(unsigned int id)
+{
+    unique_lock<mutex> lock(mMutexMap);
+    _landmarks_plane.erase(id);
+}
+
+// FW:
+unsigned int Map::get_num_landmark_planes() const
+{
+    unique_lock<mutex> lock(mMutexMap);
+    return _landmarks_plane.size();
+}
+
+
+
+
 } // namespace ORB_SLAM3

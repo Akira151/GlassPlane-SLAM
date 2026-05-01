@@ -20,6 +20,8 @@
 #include "Converter.h"
 #include "ImuTypes.h"
 #include <mutex>
+#include "landmark_plane.h"
+#include "keyplane.h"
 
 namespace ORB_SLAM3
 {
@@ -58,7 +60,8 @@ KeyFrame::KeyFrame(Frame &F, Map *pMap, KeyFrameDatabase *pKFDB)
     mbToBeErased(false), mbBad(false), mHalfBaseline(F.mb / 2), mpMap(pMap), mbCurrentPlaceRecognition(false), mNameFile(F.mNameFile), mnMergeCorrectedForKF(0),
     mpCamera(F.mpCamera), mpCamera2(F.mpCamera2),
     mvLeftToRightMatch(F.mvLeftToRightMatch), mvRightToLeftMatch(F.mvRightToLeftMatch), mTlr(F.GetRelativePoseTlr()),
-    mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mnNumberOfOpt(0), mbHasVelocity(false)
+    mvKeysRight(F.mvKeysRight), NLeft(F.Nleft), NRight(F.Nright), mTrl(F.GetRelativePoseTrl()), mnNumberOfOpt(0), mbHasVelocity(false),
+    mMask(F.mMask), mvDepthGS(F.mvDepthGS), mDepthGSFused(F.mDepthGSFused), mImRGB(F.mImRGB)
 {
     mnId = nNextId++;
 
@@ -377,7 +380,7 @@ set<MapPoint *> KeyFrame::GetMapPoints()
         if (!mvpMapPoints[i])
             continue;
         MapPoint *pMP = mvpMapPoints[i];
-        // 如果是没有来得及删除的坏点也要进行这一步
+        // 如果是没有来得及删除的坏点也要进行这一步 
         if (!pMP->isBad())
             s.insert(pMP);
     }
@@ -719,6 +722,15 @@ void KeyFrame::SetBadFlag()
         // 清空自己与其它关键帧之间的联系
         mConnectedKeyFrameWeights.clear();
         mvpOrderedConnectedKeyFrames.clear();
+
+        // Release per-keyframe keyplane objects when this keyframe becomes bad.
+        for (keyplane* pKeyPln : keyplns_)
+        {
+            delete pKeyPln;
+        }
+        keyplns_.clear();
+        _observed_planes.clear();
+        _num_observed_planes = 0;
 
         // Update Spanning Tree
         // Step 4 更新生成树，主要是处理好父子关键帧，不然会造成整个关键帧维护的图断裂，或者混乱，不能够为后端提供较好的初值
@@ -1316,5 +1328,67 @@ void KeyFrame::SetKeyFrameDatabase(KeyFrameDatabase *pKFDB)
 {
     mpKeyFrameDB = pKFDB;
 }
+
+cv::Mat KeyFrame::get_mask_GS(){
+    return mMask.clone();
+}
+
+std::vector<cv::Mat> KeyFrame::get_depth_GS_imgs(){
+    std::vector<cv::Mat> vDepthGSClones;
+    vDepthGSClones.reserve(mvDepthGS.size());
+    for(const cv::Mat &imDepthGSBlock : mvDepthGS)
+    {
+        //深拷贝
+        vDepthGSClones.push_back(imDepthGSBlock.clone());
+    }
+    return vDepthGSClones;
+}
+cv::Mat KeyFrame::get_depth_GS_fused_img(){
+    return mDepthGSFused.clone();
+}
+cv::Mat KeyFrame::get_img_rgb(){
+    return mImRGB.clone();
+}
+
+// keyplane index in keyplns_ is used by plane observations/optimizer.
+unsigned int KeyFrame::add_keyplane(keyplane *keypln){
+    std::lock_guard<std::mutex> lock(mMutexFeatures);
+    keyplns_.push_back(keypln);
+    return static_cast<unsigned int>(keyplns_.size() - 1);
+}
+
+
+std::map<Plane *, unsigned int> KeyFrame::get_observed_planes() const{
+    std::lock_guard<std::mutex> lock(mMutexFeatures);
+    return _observed_planes;
+}
+
+
+void KeyFrame::add_observed_plane(Plane *plane, unsigned int keypln_idx)
+{
+    std::lock_guard<std::mutex> lock(mMutexFeatures);
+    if (_observed_planes.count(plane))
+    {
+        return;
+    }
+    _observed_planes[plane] = keypln_idx;
+
+    // monocular/RGB-D, not for stereo settings for now
+    _num_observed_planes += 1;
+}
+
+void KeyFrame::EraseObservedPlane(Plane *plane)
+{
+    std::lock_guard<std::mutex> lock(mMutexFeatures);
+    auto it = _observed_planes.find(plane);
+    if (it == _observed_planes.end())
+    {
+        return;
+    }
+    _observed_planes.erase(it);
+    _num_observed_planes = static_cast<int>(_observed_planes.size());
+}
+
+
 
 } // namespace ORB_SLAM

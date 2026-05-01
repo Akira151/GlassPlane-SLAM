@@ -33,7 +33,7 @@
 #include "KeyFrameDatabase.h"
 #include "ORBextractor.h"
 #include "MapDrawer.h"
-#include "System.h"
+// #include "System.h"
 #include "ImuTypes.h"
 #include "Settings.h"
 
@@ -41,6 +41,12 @@
 
 #include <mutex>
 #include <unordered_set>
+
+// for pointcloud mapping and viewing
+// #include "pointcloudmapping.h"
+
+
+class PointCloudMapping;
 
 namespace ORB_SLAM3
 {
@@ -52,14 +58,15 @@ class LocalMapping;
 class LoopClosing;
 class System;
 class Settings;
+class LocalGlassPlaneMapping;
 
 class Tracking
 {  
 
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Atlas* pAtlas,
-             KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor, Settings* settings, const string &_nameSeq=std::string());
+    Tracking(System* pSys, ORBVocabulary* pVoc, FrameDrawer* pFrameDrawer, MapDrawer* pMapDrawer, Atlas* pAtlas, shared_ptr<PointCloudMapping> pPointCloud,
+             KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor, Settings* settings, const string &_nameSeq=std::string(),bool bUsingGlassPlane=false, bool bUsingGlassLine=false);
 
     ~Tracking();
 
@@ -72,11 +79,15 @@ public:
     Sophus::SE3f GrabImageStereo(const cv::Mat &imRectLeft,const cv::Mat &imRectRight, const double &timestamp, string filename);
     Sophus::SE3f GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename);
     Sophus::SE3f GrabImageMonocular(const cv::Mat &im, const double &timestamp, string filename);
+    Sophus::SE3f GrabImageRGBD_glassplane(const cv::Mat &imRGB,const cv::Mat &imD,const cv::Mat &mask,const vector<cv::Mat> &vDepthGS, const cv::Mat &imDepthGSFused, const double &timestamp, string filename);
 
     void GrabImuData(const IMU::Point &imuMeasurement);
 
     void SetLocalMapper(LocalMapping* pLocalMapper);
     void SetLoopClosing(LoopClosing* pLoopClosing);
+
+    void SetGlassPlaneMapper(LocalGlassPlaneMapping *pLocalGlassMapper);
+
     void SetViewer(Viewer* pViewer);
     void SetStepByStep(bool bSet);
     bool GetStepByStep();
@@ -139,6 +150,19 @@ public:
     Frame mLastFrame;
 
     cv::Mat mImGray;
+    cv::Mat mDepth; //注释：这里的depth和下面的mvDepthGSFloat都在tracking中被转换成了float类型，为了适配depth_factor是1000还是5000。注意不是uint16_t!!!!!!!
+    // adding mImDepth member to realize pointcloud view
+    cv::Mat mImRGB;
+    cv::Mat mDepth_float;
+
+    // glass plane
+    cv::Mat mMask;
+    vector<cv::Mat> mvDepthGS;
+    vector<cv::Mat> mvDepthGSFloat;
+    cv::Mat mDepthGSFused;
+    // for pointcloud viewing
+    cv::Mat mDepthGSFloatFused;
+
 
     // Initialization Variables (Monocular)
     std::vector<int> mvIniLastMatches;
@@ -153,6 +177,11 @@ public:
     list<KeyFrame*> mlpReferences;
     list<double> mlFrameTimes;
     list<bool> mlbLost;
+
+    void GetTrajectorySnapshot(list<Sophus::SE3f> &relativeFramePoses,
+                               list<KeyFrame*> &references,
+                               list<double> &frameTimes,
+                               list<bool> &lostFlags) const;
 
     // frames with estimated pose
     int mTrackedFr;
@@ -356,6 +385,17 @@ protected:
     Sophus::SE3f mTlr;
 
     void newParameterLoader(Settings* settings);
+
+    // for point cloud viewing
+    shared_ptr<PointCloudMapping> mpPointCloudMapping;
+
+    // glass plane
+    LocalGlassPlaneMapping* mpLocalGlassMapper;
+
+    bool mbUsingGlassPlane=false;
+    bool mbUsingGlassLine=false;
+
+    mutable std::mutex mMutexTrajectory;
 
 #ifdef REGISTER_LOOP
     bool Stop();

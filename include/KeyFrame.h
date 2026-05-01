@@ -46,8 +46,9 @@ class Map;
 class MapPoint;
 class Frame;
 class KeyFrameDatabase;
-
+class keyplane;
 class GeometricCamera;
+class Plane;
 
 class KeyFrame
 {
@@ -424,6 +425,8 @@ public:
     //bool mbHasHessian;
     //cv::Mat mHessianPose;
 
+    // Calibration
+    Eigen::Matrix3f mK_;
     // The following variables need to be accessed trough a mutex to be thread safe.
 protected:
     // sophus poses
@@ -492,13 +495,11 @@ protected:
     // Backup for Cameras
     unsigned int mnBackupIdCamera, mnBackupIdCamera2;
 
-    // Calibration
-    Eigen::Matrix3f mK_;
 
     // Mutex
     std::mutex mMutexPose; // for pose, velocity and biases
     std::mutex mMutexConnections;
-    std::mutex mMutexFeatures;
+    mutable std::mutex mMutexFeatures;
     std::mutex mMutexMap;
 
 public:
@@ -535,6 +536,37 @@ public:
         }
         cout << "Point distribution in KeyFrame: left-> " << left << " --- right-> " << right << endl;
     }
+
+    // glass plane
+    cv::Mat mMask;
+    std::vector<cv::Mat> mvDepthGS;
+    cv::Mat mDepthGSFused;
+
+    cv::Mat get_mask_GS();
+    std::vector<cv::Mat> get_depth_GS_imgs();
+    cv::Mat get_depth_GS_fused_img();
+
+    // for glass plane 实际上很低效的写法，但是先这么写
+    cv::Mat mImRGB;
+    cv::Mat get_img_rgb();
+
+    // glass observation
+    std::vector<keyplane* > keyplns_;
+    unsigned int add_keyplane(keyplane *keypln);
+
+    // glass landmark
+    std::map<Plane *, unsigned int> _observed_planes; 
+    std::map<Plane *, unsigned int> get_observed_planes() const;
+    void add_observed_plane(Plane *plane, unsigned int keypln_idx);
+    void EraseObservedPlane(Plane *plane);
+
+    int _num_observed_planes=0;
+
+
+    // 这是一个标识着当前关键帧中是否能检测到有效平面的flag。这个flag默认是false，即默认是没有玻璃的情况。这时候在localMapping里面，则使用普通的点local BA。
+    // 这个标识的值由process_new_kf_glass的返回值是true还是false决定。在localMapping中赋值。
+    // 决定process_new_kf_glass的返回值的因素为：如果当前帧的玻璃占比足够大，（且深度图没有抽风），则将这个标识改为true，然后localMapping中针对这帧使用plane local BA。
+    bool has_good_plane = false;
 
 
 };

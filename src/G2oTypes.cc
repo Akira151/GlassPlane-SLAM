@@ -217,6 +217,9 @@ bool ImuCamPose::isDepthPositive(const Eigen::Vector3d &Xw, int cam_idx) const
 /** 
  * @brief 优化算出更新值，更新到状态中
  * @param pu 更新值
+ * 该Update函数接受一个6维向量的李代数作为输入，然后就地更新待优化变量Rwb和twb。
+ * Rcb和tcb表示相机到imu的转换，通常是固定值。
+ * Rcw和tcw代表相机外参。但他是通过Rwb-Rbc转换得到的，并不是待优化变量。
  */
 void ImuCamPose::Update(const double *pu)
 {
@@ -225,7 +228,7 @@ void ImuCamPose::Update(const double *pu)
     ut << pu[3], pu[4], pu[5];
 
     // Update body pose
-    // 更新的是imu位姿
+    // 更新的是imu位姿，在这里是world-body，即世界到imu的外参。
     twb += Rwb * ut;
     Rwb = Rwb * ExpSO3(ur);
 

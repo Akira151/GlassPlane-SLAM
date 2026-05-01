@@ -39,7 +39,7 @@
 #include "Viewer.h"
 #include "ImuTypes.h"
 #include "Settings.h"
-
+#include "GlassPlaneMappingConfig.h"
 
 namespace ORB_SLAM3
 {
@@ -79,7 +79,8 @@ class Tracking;
 class LocalMapping;
 class LoopClosing;
 class Settings;
-
+class PointCloudMapping;
+class LocalGlassPlaneMapping;
 class System
 {
 public:
@@ -102,7 +103,7 @@ public:
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     // Initialize the SLAM system. It launches the Local Mapping, Loop Closing and Viewer threads.
-    System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer = true, const int initFr = 0, const string &strSequence = std::string());
+    System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor, const bool bUseViewer = true, const int initFr = 0, const string &strSequence = std::string(),bool bUsingGlassPlane=false, bool bUsingGlassLine=false);
 
     // Proccess the given stereo frame. Images must be synchronized and rectified.
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
@@ -114,6 +115,11 @@ public:
     // Input depthmap: Float (CV_32F).
     // Returns the camera pose (empty if tracking fails).
     Sophus::SE3f TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp, const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
+
+
+
+    Sophus::SE3f TrackRGBD_glassplane(const cv::Mat &im, const cv::Mat &depthmap, const cv::Mat &mask, const vector<cv::Mat> &vDepthGS, const cv::Mat &imDepthGSFused, const double &timestamp,
+                                     const vector<IMU::Point>& vImuMeas = vector<IMU::Point>(), string filename="");
 
     // Proccess the given monocular frame and optionally imu data
     // Input images: RGB (CV_8UC3) or grayscale (CV_8U). RGB is converted to grayscale.
@@ -142,13 +148,13 @@ public:
 
     // Save camera trajectory in the TUM RGB-D dataset format.
     // Only for stereo and RGB-D. This method does not work for monocular.
-    // Call first Shutdown()
+    // Can be called after Shutdown() or during runtime to save a snapshot.
     // See format details at: http://vision.in.tum.de/data/datasets/rgbd-dataset
     void SaveTrajectoryTUM(const string &filename);
 
     // Save keyframe poses in the TUM RGB-D dataset format.
     // This method works for all sensor input.
-    // Call first Shutdown()
+    // Can be called after Shutdown() or during runtime to save a snapshot.
     // See format details at: http://vision.in.tum.de/data/datasets/rgbd-dataset
     void SaveKeyFrameTrajectoryTUM(const string &filename);
 
@@ -262,6 +268,15 @@ private:
     string mStrVocabularyFilePath;
 
     Settings* settings_;
+
+    // point cloud mapping
+    shared_ptr<PointCloudMapping> mpPointCloudMapping;
+    GlassPlaneMappingConfig mGlassPlaneMappingConfig;
+
+    bool mbUsingGlassPlane=false;
+    bool mbUsingGlassLine=false;
+
+    LocalGlassPlaneMapping* mpLocalGlassMapper = nullptr;
 };
 
 }// namespace ORB_SLAM

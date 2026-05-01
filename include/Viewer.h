@@ -36,6 +36,7 @@ class FrameDrawer;
 class MapDrawer;
 class System;
 class Settings;
+class Plane;
 
 class Viewer
 {
@@ -62,6 +63,7 @@ public:
     void Release();
 
     //void SetTrackingPause();
+
 
     bool both;
 private:

@@ -24,6 +24,9 @@
 #include "Converter.h"
 #include "GeometricTools.h"
 
+#include "LocalGlassPlaneMapping.h"
+#include "Optimizer_plane.h"
+
 #include<mutex>
 #include<chrono>
 
@@ -38,10 +41,11 @@ namespace ORB_SLAM3
  * @param bInertial 是否是惯性模式
  * @param _strSeqName 序列名字，没用到
  */
-LocalMapping::LocalMapping(System* pSys, Atlas *pAtlas, const float bMonocular, bool bInertial, const string &_strSeqName):
+LocalMapping::LocalMapping(System* pSys, Atlas *pAtlas, const float bMonocular, bool bInertial, const string &_strSeqName, bool bUsingGlassPlane, bool bUsingGlassLine):
     mpSystem(pSys), mbMonocular(bMonocular), mbInertial(bInertial), mbResetRequested(false), mbResetRequestedActiveMap(false), mbFinishRequested(false), mbFinished(true), mpAtlas(pAtlas), bInitializing(false),
     mbAbortBA(false), mbStopped(false), mbStopRequested(false), mbNotStop(false), mbAcceptKeyFrames(true),
-    mIdxInit(0), mScale(1.0), mInitSect(0), mbNotBA1(true), mbNotBA2(true), mIdxIteration(0), infoInertial(Eigen::MatrixXd::Zero(9,9))
+    mIdxInit(0), mScale(1.0), mInitSect(0), mbNotBA1(true), mbNotBA2(true), mIdxIteration(0), infoInertial(Eigen::MatrixXd::Zero(9,9)),
+    mbUsingGlassLine(bUsingGlassLine),mbUsingGlassPlane(bUsingGlassPlane)
 {
 
     /*
@@ -88,6 +92,11 @@ void LocalMapping::SetTracker(Tracking *pTracker)
     mpTracker=pTracker;
 }
 
+void LocalMapping::SetGlassPlaneMapper(LocalGlassPlaneMapping *pLocalGlassMapper)
+{
+    mpLocalGlassMapper=pLocalGlassMapper;
+}
+
 /**
  * @brief 局部地图线程主函数
  */
@@ -95,6 +104,12 @@ void LocalMapping::Run()
 {
     // 标记状态，表示当前run函数正在运行，尚未结束
     mbFinished = false;
+    unsigned long dbg_lba_skip_counter = 0;
+    auto PendingKFCount = [this]() -> size_t
+    {
+        unique_lock<mutex> lock(mMutexNewKFs);
+        return mlNewKeyFrames.size();
+    };
 
     // 主循环
     while(1)
@@ -117,6 +132,8 @@ void LocalMapping::Run()
             // BoW conversion and insertion in Map
             // Step 2 处理列表中的关键帧，包括计算BoW、更新观测、描述子、共视图，插入到地图等
             ProcessNewKeyFrame();
+
+
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndProcessKF = std::chrono::steady_clock::now();
 
@@ -138,6 +155,9 @@ void LocalMapping::Run()
             // Step 4 当前关键帧与相邻关键帧通过三角化产生新的地图点，使得跟踪更稳
             CreateNewMapPoints();
 
+            // 待添加：当关键帧中观察到的 local plane 的创建
+            // mpLocalGlassMapper->process_new_kf_glass(mpCurrentKeyFrame);
+
             // 注意orbslam2中放在了函数SearchInNeighbors（用到了mbAbortBA）后面，应该放这里更合适
             mbAbortBA = false;
 
@@ -150,6 +170,7 @@ void LocalMapping::Run()
                 // 再完成当前关键帧与相邻关键帧的地图点的融合（在当前关键帧中查找当前相邻关键帧的地图点）
                 SearchInNeighbors();
             }
+
 
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndMPCreation = std::chrono::steady_clock::now();
@@ -165,50 +186,62 @@ void LocalMapping::Run()
             int num_edges_BA = 0;
 
             // 已经处理完队列中的最后的一个关键帧，并且闭环检测没有请求停止LocalMapping
-            if(!CheckNewKeyFrames() && !stopRequested())
+            // local mapping完成，准备开始Local BA
+            const bool hasPendingKFsForLBA = CheckNewKeyFrames();
+            const bool stopRequestedForLBA = stopRequested();
+            if(!hasPendingKFsForLBA && !stopRequestedForLBA)
             {
                 // 当前地图中关键帧数目大于2个
                 if(mpAtlas->KeyFramesInMap()>2)
                 {
-                    // Step 6.1 处于IMU模式并且当前关键帧所在的地图已经完成IMU初始化
-                    if(mbInertial && mpCurrentKeyFrame->GetMap()->isImuInitialized())
-                    {
-                        // 计算上一关键帧到当前关键帧相机光心的距离 + 上上关键帧到上一关键帧相机光心的距离
-                        float dist = (mpCurrentKeyFrame->mPrevKF->GetCameraCenter() - mpCurrentKeyFrame->GetCameraCenter()).norm() +
-                                (mpCurrentKeyFrame->mPrevKF->mPrevKF->GetCameraCenter() - mpCurrentKeyFrame->mPrevKF->GetCameraCenter()).norm();
-                        // 如果距离大于5厘米，记录当前KF和上一KF时间戳的差，累加到mTinit
-                        if(dist>0.05)
-                            mTinit += mpCurrentKeyFrame->mTimeStamp - mpCurrentKeyFrame->mPrevKF->mTimeStamp;
-                        // 当前关键帧所在的地图尚未完成IMU BA2（IMU第三阶段初始化）
-                        if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA2())
+                    if(!this->mbUsingGlassPlane){
+                    // if(1){
+                        // Step 6.1 处于IMU模式并且当前关键帧所在的地图已经完成IMU初始化
+                        if(mbInertial && mpCurrentKeyFrame->GetMap()->isImuInitialized())
                         {
-                            // 如果累计时间差小于10s 并且 距离小于2厘米，认为运动幅度太小，不足以初始化IMU，将mbBadImu设置为true
-                            if((mTinit<10.f) && (dist<0.02))
+                            // 计算上一关键帧到当前关键帧相机光心的距离 + 上上关键帧到上一关键帧相机光心的距离
+                            float dist = (mpCurrentKeyFrame->mPrevKF->GetCameraCenter() - mpCurrentKeyFrame->GetCameraCenter()).norm() +
+                                    (mpCurrentKeyFrame->mPrevKF->mPrevKF->GetCameraCenter() - mpCurrentKeyFrame->mPrevKF->GetCameraCenter()).norm();
+                            // 如果距离大于5厘米，记录当前KF和上一KF时间戳的差，累加到mTinit
+                            if(dist>0.05)
+                                mTinit += mpCurrentKeyFrame->mTimeStamp - mpCurrentKeyFrame->mPrevKF->mTimeStamp;
+                            // 当前关键帧所在的地图尚未完成IMU BA2（IMU第三阶段初始化）
+                            if(!mpCurrentKeyFrame->GetMap()->GetIniertialBA2())
                             {
-                                cout << "Not enough motion for initializing. Reseting..." << endl;
-                                unique_lock<mutex> lock(mMutexReset);
-                                mbResetRequestedActiveMap = true;
-                                mpMapToReset = mpCurrentKeyFrame->GetMap();
-                                mbBadImu = true;  // 在跟踪线程里会重置当前活跃地图
+                                // 如果累计时间差小于10s 并且 距离小于2厘米，认为运动幅度太小，不足以初始化IMU，将mbBadImu设置为true
+                                if((mTinit<10.f) && (dist<0.02))
+                                {
+                                    cout << "Not enough motion for initializing. Reseting..." << endl;
+                                    unique_lock<mutex> lock(mMutexReset);
+                                    mbResetRequestedActiveMap = true;
+                                    mpMapToReset = mpCurrentKeyFrame->GetMap();
+                                    mbBadImu = true;  // 在跟踪线程里会重置当前活跃地图
+                                }
                             }
+                            // 判断成功跟踪匹配的点数是否足够多
+                            // 条件---------1.1、跟踪成功的内点数目大于75-----1.2、并且是单目--或--2.1、跟踪成功的内点数目大于100-----2.2、并且不是单目
+                            bool bLarge = ((mpTracker->GetMatchesInliers()>75)&&mbMonocular)||((mpTracker->GetMatchesInliers()>100)&&!mbMonocular);
+                            // 局部地图+IMU一起优化，优化关键帧位姿、地图点、IMU参数
+                            Optimizer::LocalInertialBA(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA, bLarge, !mpCurrentKeyFrame->GetMap()->GetIniertialBA2());
+                            b_doneLBA = true;
                         }
-                        // 判断成功跟踪匹配的点数是否足够多
-                        // 条件---------1.1、跟踪成功的内点数目大于75-----1.2、并且是单目--或--2.1、跟踪成功的内点数目大于100-----2.2、并且不是单目
-                        bool bLarge = ((mpTracker->GetMatchesInliers()>75)&&mbMonocular)||((mpTracker->GetMatchesInliers()>100)&&!mbMonocular);
-                        // 局部地图+IMU一起优化，优化关键帧位姿、地图点、IMU参数
-                        Optimizer::LocalInertialBA(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA, bLarge, !mpCurrentKeyFrame->GetMap()->GetIniertialBA2());
+                        else
+                        {
+                            // Step 6.2 不是IMU模式或者当前关键帧所在的地图还未完成IMU初始化
+                            // 局部地图BA，不包括IMU数据
+                            // 注意这里的第二个参数是按地址传递的,当这里的 mbAbortBA 状态发生变化时，能够及时执行/停止BA
+                            // 局部地图优化，不包括IMU信息。优化关键帧位姿、地图点
+                            Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA);
+                            b_doneLBA = true;
+                        }
+                    }
+                    // plane 改良
+                    // 待做的就是在这里进入平面的local_BA模式。即点的顶点+点的边的基础上，在优化器中加入面的拓展，然后联合优化。
+                    else{
+                        std::cout<<"=======start plae Local BA=========="<<std::endl;
+                        Optimizer_plane::LocalBundleAdjustment_plane(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(), num_FixedKF_BA, num_OptKF_BA, num_MPs_BA, num_edges_BA);
                         b_doneLBA = true;
                     }
-                    else
-                    {
-                        // Step 6.2 不是IMU模式或者当前关键帧所在的地图还未完成IMU初始化
-						// 局部地图BA，不包括IMU数据
-						// 注意这里的第二个参数是按地址传递的,当这里的 mbAbortBA 状态发生变化时，能够及时执行/停止BA
-                        // 局部地图优化，不包括IMU信息。优化关键帧位姿、地图点
-                        Optimizer::LocalBundleAdjustment(mpCurrentKeyFrame,&mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA);
-                        b_doneLBA = true;
-                    }
-
                 }
 #ifdef REGISTER_TIMES
                 std::chrono::steady_clock::time_point time_EndLBA = std::chrono::steady_clock::now();
@@ -230,6 +263,17 @@ void LocalMapping::Run()
                 }
 
 #endif
+                if(b_doneLBA)
+                {
+                    std::cout << "[LBA-DBG] done on KF " << mpCurrentKeyFrame->mnId
+                              << " opt=" << num_OptKF_BA
+                              << " fixed=" << num_FixedKF_BA
+                              << " mps=" << num_MPs_BA
+                              << " edges=" << num_edges_BA
+                              << " abort_flag=" << (mbAbortBA ? 1 : 0)
+                              << " pending_kf=" << PendingKFCount()
+                              << std::endl;
+                }
 
                 // Initialize IMU here
                 // Step 7 当前关键帧所在地图未完成IMU初始化（第一阶段）
@@ -307,6 +351,18 @@ void LocalMapping::Run()
                                 ScaleRefinement();
                         }
                     }
+                }
+            }
+            else
+            {
+                ++dbg_lba_skip_counter;
+                if(dbg_lba_skip_counter % 30 == 0)
+                {
+                    std::cout << "[LBA-DBG] skip at KF " << mpCurrentKeyFrame->mnId
+                              << " has_pending=" << (hasPendingKFsForLBA ? 1 : 0)
+                              << " stop_requested=" << (stopRequestedForLBA ? 1 : 0)
+                              << " pending_kf=" << PendingKFCount()
+                              << std::endl;
                 }
             }
 
@@ -433,6 +489,16 @@ void LocalMapping::ProcessNewKeyFrame()
     // Insert Keyframe in Map
     // Step 5：将该关键帧插入到地图中
     mpAtlas->AddKeyFrame(mpCurrentKeyFrame);
+
+
+    // add 如果使用平面的话，生成属于该关键帧的平面。
+    // 结果保存在地图新建的plane_lm和keyfrm的_keyplns和_observed_planes中，分别代表该keyfrm中观测到的keyplns和他们对应的3d plane landmarks,按照下标一一对应。
+    
+    if(mbUsingGlassPlane){
+        bool has_good_plane = mpLocalGlassMapper->process_new_kf_glass(mpCurrentKeyFrame);
+        mpCurrentKeyFrame->has_good_plane = has_good_plane;
+    }
+
 }
 
 /**

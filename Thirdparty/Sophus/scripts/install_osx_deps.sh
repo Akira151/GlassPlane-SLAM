@@ -16,6 +16,6 @@ mkdir build
 cd build
 ccache -M 50G
 ccache -s
-cmake -DCXX11=On -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ..
+cmake -DCXX17=On -DCMAKE_CXX_COMPILER_LAUNCHER=ccache ..
 make -j3
 make install

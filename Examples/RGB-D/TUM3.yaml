@@ -68,3 +68,15 @@ Viewer.ViewpointY: -0.7
 Viewer.ViewpointZ: -1.8
 Viewer.ViewpointF: 500.0
 
+PointCloudMapping.Resolution: 0.01
+
+# Glass plane mapping thresholds
+GlassPlaneMapping.FrameMaskWhiteThreshold: 240
+GlassPlaneMapping.PointCloudMaskThreshold: 128
+GlassPlaneMapping.MinPlaneConsecutiveObs: 10
+GlassPlaneMapping.MinFrameGlassRatio: 0.20
+GlassPlaneMapping.MinBlockGlassRatio: 0.05
+GlassPlaneMapping.RansacDistanceThreshold: 0.05
+GlassPlaneMapping.PlaneAttachDist: 0.30
+GlassPlaneMapping.PlaneMatchAngleCos: 0.96
+GlassPlaneMapping.PlaneMatchDistance: 0.20

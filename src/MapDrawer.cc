@@ -20,8 +20,9 @@
 #include "MapPoint.h"
 #include "KeyFrame.h"
 #include <pangolin/pangolin.h>
+#include <algorithm>
 #include <mutex>
-
+#include "landmark_plane.h"
 namespace ORB_SLAM3
 {
 
@@ -464,4 +465,139 @@ void MapDrawer::GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M, pangolin
     MOw.m[13] = Twc(1,3);
     MOw.m[14] = Twc(2,3);
 }
+void MapDrawer::DrawPlaneLandmark(Plane *plane){
+        // 用 n 和 d 绘制一个矩形平面
+        Eigen::Vector3d n = plane->get_normal();
+        double d = plane->get_offset(); // 平面方程的 d
+        const double n_norm = n.norm();
+        if (n_norm < 1e-8)
+        {
+            return;
+        }
+        n /= n_norm;
+        d /= n_norm;
+
+        Eigen::Vector3d p0 = -d * n;  // 原点到平面的垂足
+        Eigen::Vector3d centroid = plane->getCentroid();
+        if (centroid.allFinite() && centroid.squaredNorm() > 1e-8)
+        {
+            // 将中心投影到平面上
+            p0 = centroid - (n.dot(centroid) + d) * n;
+        }
+        Eigen::Vector3d a(1,0,0);
+        if (fabs(a.dot(n)) > 0.99) a = Eigen::Vector3d(0,1,0);
+        Eigen::Vector3d u = n.cross(a).normalized();
+        Eigen::Vector3d v = n.cross(u).normalized();
+
+        double half_w = 0.35;
+        double half_h = 0.35;
+        const std::vector<MapPoint*> plane_points = plane->get_map_points();
+        if (plane_points.size() >= 3)
+        {
+            double max_u = 0.0;
+            double max_v = 0.0;
+            size_t valid_pts = 0;
+            for (MapPoint* pMP : plane_points)
+            {
+                if (!pMP || pMP->isBad())
+                {
+                    continue;
+                }
+                const Eigen::Vector3f pos_f = pMP->GetWorldPos();
+                const Eigen::Vector3d pos = pos_f.cast<double>();
+                if (!pos.allFinite())
+                {
+                    continue;
+                }
+                const Eigen::Vector3d delta = pos - p0;
+                max_u = std::max(max_u, std::abs(delta.dot(u)));
+                max_v = std::max(max_v, std::abs(delta.dot(v)));
+                ++valid_pts;
+            }
+            if (valid_pts >= 3)
+            {
+                half_w = std::clamp(max_u + 0.05, 0.15, 2.0);
+                half_h = std::clamp(max_v + 0.05, 0.15, 2.0);
+            }
+        }
+
+        Eigen::Vector3d p1 = p0 + u*half_w + v*half_h;
+        Eigen::Vector3d p2 = p0 + u*half_w - v*half_h;
+        Eigen::Vector3d p3 = p0 - u*half_w - v*half_h;
+        Eigen::Vector3d p4 = p0 - u*half_w + v*half_h;
+
+        const std::map<KeyFrame*, unsigned int> obs = plane->get_observations();
+        bool is_local = false;
+        Map* pActiveMap = mpAtlas ? mpAtlas->GetCurrentMap() : nullptr;
+        if (pActiveMap)
+        {
+            const std::set<long unsigned int>& sOptKFs = pActiveMap->msOptKFs;
+            const std::set<long unsigned int>& sFixedKFs = pActiveMap->msFixedKFs;
+            if (!sOptKFs.empty() || !sFixedKFs.empty())
+            {
+                for (const auto &kv : obs)
+                {
+                    KeyFrame* pKF = kv.first;
+                    if (!pKF || pKF->isBad())
+                    {
+                        continue;
+                    }
+                    const long unsigned int id = pKF->mnId;
+                    if (sOptKFs.count(id) || sFixedKFs.count(id))
+                    {
+                        is_local = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        const float r = is_local ? 1.0f : 0.0f;
+        const float g = 0.0f;
+        const float b = 0.0f;
+
+        glColor4f(r, g, b, _transparency_alpha);
+        glBegin(GL_QUADS);
+        glVertex3dv(p1.data());
+        glVertex3dv(p2.data());
+        glVertex3dv(p3.data());
+        glVertex3dv(p4.data());
+        glEnd();
+
+        if (!obs.empty())
+        {
+            glLineWidth(mGraphLineWidth);
+            glColor4f(r, g, b, 0.6f);
+            glBegin(GL_LINES);
+            for (const auto &kv : obs)
+            {
+                KeyFrame *pKF = kv.first;
+                if (!pKF || pKF->isBad())
+                {
+                    continue;
+                }
+                Eigen::Vector3f Ow = pKF->GetCameraCenter();
+                glVertex3f(p0(0), p0(1), p0(2));
+                glVertex3f(Ow(0), Ow(1), Ow(2));
+            }
+            glEnd();
+        }
+
+
+
+}
+
+void MapDrawer::DrawPlaneLandmarks(){
+    std::vector<Plane *> planes=mpAtlas->GetCurrentMap()->get_all_landmark_planes();
+    int num_plane=0;
+    for(auto const &plane : planes){
+        if(!plane->is_valid()){
+            continue;
+        }
+        DrawPlaneLandmark(plane);
+        num_plane+=1;
+    }
+    std::cout<<"DrawPlane is used. plane count: "<<num_plane<<endl;
+}
+
 } //namespace ORB_SLAM

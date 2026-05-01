@@ -26,6 +26,7 @@
 #include "Tracking.h"
 #include "KeyFrameDatabase.h"
 #include "Settings.h"
+#include "LocalGlassPlaneMapping.h"
 
 #include <mutex>
 
@@ -37,16 +38,20 @@ class System;
 class Tracking;
 class LoopClosing;
 class Atlas;
+class LocalGlassPlaneMapping;
 
 class LocalMapping
 {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    LocalMapping(System* pSys, Atlas* pAtlas, const float bMonocular, bool bInertial, const string &_strSeqName=std::string());
+    LocalMapping(System* pSys, Atlas* pAtlas, const float bMonocular, bool bInertial, const string &_strSeqName=std::string(),bool bUsingGlassPlane=false, bool bUsingGlassLine=false);
 
     void SetLoopCloser(LoopClosing* pLoopCloser);
 
     void SetTracker(Tracking* pTracker);
+
+    void SetGlassPlaneMapper(LocalGlassPlaneMapping *pLocalGlassMapper);
+    
 
     // Main function
     void Run();
@@ -195,6 +200,11 @@ protected:
     //DEBUG
     ofstream f_lm;
 
+    // glass plane
+    LocalGlassPlaneMapping* mpLocalGlassMapper;
+
+    bool mbUsingGlassPlane=false;
+    bool mbUsingGlassLine=false;
     };
 
 } //namespace ORB_SLAM

@@ -1850,6 +1850,10 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool *pbStopFlag, Map *pMap
 
     if (num_fixedKF == 0)
     {
+        std::cout << "[LBA-DBG] abort num_fixedKF==0 at KF " << pKF->mnId
+                  << " local_kf=" << lLocalKeyFrames.size()
+                  << " local_mp=" << lLocalMapPoints.size()
+                  << std::endl;
         Verbose::PrintMess("LM-LBA: There are 0 fixed KF in the optimizations, LBA aborted", Verbose::VERBOSITY_NORMAL);
         return;
     }
@@ -2164,6 +2168,7 @@ void Optimizer::LocalBundleAdjustment(KeyFrame *pKF, bool *pbStopFlag, Map *pMap
     }
 
     // Recover optimized data
+    // LocalBA的最终输出：改变keyfrm.pose和mappoints.worldPos的值。所以新建一个独立的plane optimizer是可能的。
     // Keyframes
     bool bShowStats = false;
     for (list<KeyFrame *>::iterator lit = lLocalKeyFrames.begin(), lend = lLocalKeyFrames.end(); lit != lend; lit++)

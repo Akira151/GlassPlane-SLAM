@@ -74,7 +74,7 @@ Frame::Frame(const Frame &frame)
      monoLeft(frame.monoLeft), monoRight(frame.monoRight), mvLeftToRightMatch(frame.mvLeftToRightMatch),
      mvRightToLeftMatch(frame.mvRightToLeftMatch), mvStereo3Dpoints(frame.mvStereo3Dpoints),
      mTlr(frame.mTlr), mRlr(frame.mRlr), mtlr(frame.mtlr), mTrl(frame.mTrl),
-     mTcw(frame.mTcw), mbHasPose(false), mbHasVelocity(false)
+     mTcw(frame.mTcw), mbHasPose(false), mbHasVelocity(false), mMask(frame.mMask), mvDepthGS(frame.mvDepthGS), mDepthGSFused(frame.mDepthGSFused), mImRGB(frame.mImRGB)
 {
     for(int i=0;i<FRAME_GRID_COLS;i++)
         for(int j=0; j<FRAME_GRID_ROWS; j++){
@@ -342,6 +342,119 @@ Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeSt
     // 将特征点分配到图像网格中
     AssignFeaturesToGrid();
 }
+// RGBD
+Frame::Frame(const cv::Mat &imGray, const cv::Mat &imRGB, const cv::Mat &imDepth,const cv::Mat &mask, const vector<cv::Mat> &vDepthGS, const cv::Mat &imDepthGSFused, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth, GeometricCamera* pCamera,Frame* pPrevF, const IMU::Calib &ImuCalib)
+    :mpcpi(NULL),mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),
+     mTimeStamp(timeStamp), mK(K.clone()), mK_(Converter::toMatrix3f(K)),mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth),
+     mImuCalib(ImuCalib), mpImuPreintegrated(NULL), mpPrevFrame(pPrevF), mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbIsSet(false), mbImuPreintegrated(false),
+     mpCamera(pCamera),mpCamera2(nullptr), mbHasPose(false), mbHasVelocity(false), mMask(mask), mvDepthGS(vDepthGS), mDepthGSFused(imDepthGSFused), mImRGB(imRGB)
+{
+    // Frame ID
+    // Step 1 帧的ID 自增
+    mnId=nNextId++;
+
+    // Scale Level Info
+    // Step 2 计算图像金字塔的参数 
+	// 获取图像金字塔的层数
+    mnScaleLevels = mpORBextractorLeft->GetLevels();
+    // 获得层与层之间的缩放比
+    mfScaleFactor = mpORBextractorLeft->GetScaleFactor();
+    // 计算上面缩放比的对数
+    mfLogScaleFactor = log(mfScaleFactor);
+    // 获取每层图像的缩放因子
+    mvScaleFactors = mpORBextractorLeft->GetScaleFactors();
+    // 同样获取每层图像缩放因子的倒数
+    mvInvScaleFactors = mpORBextractorLeft->GetInverseScaleFactors();
+    // 高斯模糊的时候，使用的方差
+    mvLevelSigma2 = mpORBextractorLeft->GetScaleSigmaSquares();
+    // 获取sigma^2的倒数
+    mvInvLevelSigma2 = mpORBextractorLeft->GetInverseScaleSigmaSquares();
+
+    // ORB extraction
+#ifdef REGISTER_TIMES
+    std::chrono::steady_clock::time_point time_StartExtORB = std::chrono::steady_clock::now();
+#endif
+    ExtractORB(0,imGray,0,0);
+#ifdef REGISTER_TIMES
+    std::chrono::steady_clock::time_point time_EndExtORB = std::chrono::steady_clock::now();
+
+    mTimeORB_Ext = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndExtORB - time_StartExtORB).count();
+#endif
+
+    // 获取特征点的个数
+    N = mvKeys.size();
+
+    // 如果这一帧没有能够提取出特征点，那么就直接返回了
+    if(mvKeys.empty())
+        return;
+
+    // Step 4 用OpenCV的矫正函数、内参对提取到的特征点进行矫正
+    UndistortKeyPoints();
+
+    // Step 5 获取图像的深度，并且根据这个深度推算其右图中匹配的特征点的视差
+    ComputeStereoFromRGBD(imDepth);
+
+    // 初始化本帧的地图点
+    mvpMapPoints = vector<MapPoint*>(N,static_cast<MapPoint*>(NULL));
+
+    mmProjectPoints.clear();
+    mmMatchedInImage.clear();
+
+    // 记录地图点是否为外点，初始化均为外点false
+    mvbOutlier = vector<bool>(N,false);
+
+    // This is done only for the first Frame (or after a change in the calibration)
+    //  Step 5 计算去畸变后图像边界，将特征点分配到网格中。这个过程一般是在第一帧或者是相机标定参数发生变化之后进行
+    if(mbInitialComputations)
+    {
+        // 计算去畸变后图像的边界
+        ComputeImageBounds(imGray);
+
+        // 表示一个图像像素相当于多少个图像网格列（宽）
+        mfGridElementWidthInv=static_cast<float>(FRAME_GRID_COLS)/static_cast<float>(mnMaxX-mnMinX);
+		// 表示一个图像像素相当于多少个图像网格行（高）
+        mfGridElementHeightInv=static_cast<float>(FRAME_GRID_ROWS)/static_cast<float>(mnMaxY-mnMinY);
+
+        fx = K.at<float>(0,0);
+        fy = K.at<float>(1,1);
+        cx = K.at<float>(0,2);
+        cy = K.at<float>(1,2);
+        // 猜测是因为这种除法计算需要的时间略长，所以这里直接存储了这个中间计算结果
+        invfx = 1.0f/fx;
+        invfy = 1.0f/fy;
+
+        // 特殊的初始化过程完成，标志复位
+        mbInitialComputations=false;
+    }
+
+    // 计算假想的基线长度 baseline= mbf/fx
+    // 后面要对从RGBD相机输入的特征点,结合相机基线长度,焦距,以及点的深度等信息来计算其在假想的"右侧图像"上的匹配点
+    mb = mbf/fx;
+
+    if(pPrevF){
+        if(pPrevF->HasVelocity())
+            SetVelocity(pPrevF->GetVelocity());
+    }
+    else{
+        mVw.setZero();
+    }
+
+    mpMutexImu = new std::mutex();
+
+    //Set no stereo fisheye information
+    Nleft = -1;
+    Nright = -1;
+    mvLeftToRightMatch = vector<int>(0);
+    mvRightToLeftMatch = vector<int>(0);
+    mvStereo3Dpoints = vector<Eigen::Vector3f>(0);
+    monoLeft = -1;
+    monoRight = -1;
+
+    // 将特征点分配到图像网格中
+    AssignFeaturesToGrid();
+}
+
+
 
 // 单目模式
 Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, GeometricCamera* pCamera, cv::Mat &distCoef, const float &bf, const float &thDepth, Frame* pPrevF, const IMU::Calib &ImuCalib)

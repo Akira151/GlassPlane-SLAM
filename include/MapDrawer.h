@@ -32,6 +32,7 @@ namespace ORB_SLAM3
 {
 
 class Settings;
+class Plane;
 
 class MapDrawer
 {
@@ -50,6 +51,9 @@ public:
     void SetReferenceKeyFrame(KeyFrame *pKF);
     void GetCurrentOpenGLCameraMatrix(pangolin::OpenGlMatrix &M, pangolin::OpenGlMatrix &MOw);
 
+    void DrawPlaneLandmark(Plane *plane);
+    void DrawPlaneLandmarks();
+
 private:
 
     bool ParseViewerParamFile(cv::FileStorage &fSettings);
@@ -64,6 +68,8 @@ private:
     Sophus::SE3f mCameraPose;
 
     std::mutex mMutexCamera;
+
+    float _transparency_alpha=0.7;
 
     float mfFrameColors[6][3] = {{0.0f, 0.0f, 1.0f},
                                 {0.8f, 0.4f, 1.0f},

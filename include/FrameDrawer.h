@@ -50,6 +50,11 @@ public:
     cv::Mat DrawFrame(float imageScale=1.f);
     cv::Mat DrawRightFrame(float imageScale=1.f);
 
+    cv::Mat DrawDepthVis();
+    cv::Mat GetMask();
+    std::vector<cv::Mat> GetDepthGS();
+    cv::Mat DrawDepthGSVis();
+
     bool both;
 
 protected:
@@ -58,6 +63,10 @@ protected:
 
     // Info of the frame to be drawn
     cv::Mat mIm, mImRight;
+    cv::Mat mDepth, mDepthVis;
+    cv::Mat mMask;
+    cv::Mat mDepthGSFused;
+    std::vector<cv::Mat> mvDepthGS;
     int N;
     vector<cv::KeyPoint> mvCurrentKeys,mvCurrentKeysRight;
     vector<bool> mvbMap, mvbVO;

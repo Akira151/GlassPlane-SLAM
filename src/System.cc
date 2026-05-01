@@ -33,8 +33,67 @@
 #include <boost/archive/xml_iarchive.hpp>
 #include <boost/archive/xml_oarchive.hpp>
 
+#include "pointcloudmapping.h"
+#include "LocalGlassPlaneMapping.h"
+
 namespace ORB_SLAM3
 {
+namespace
+{
+
+float ReadOptionalFloat(const cv::FileStorage& fsSettings, const std::string& name, float default_value)
+{
+    cv::FileNode node = fsSettings[name];
+    if (node.empty())
+    {
+        return default_value;
+    }
+    if (!node.isReal() && !node.isInt())
+    {
+        std::cerr << name << " must be numeric, aborting..." << std::endl;
+        exit(-1);
+    }
+    return node.real();
+}
+
+int ReadOptionalInt(const cv::FileStorage& fsSettings, const std::string& name, int default_value)
+{
+    cv::FileNode node = fsSettings[name];
+    if (node.empty())
+    {
+        return default_value;
+    }
+    if (node.isInt())
+    {
+        return node.operator int();
+    }
+    if (node.isReal())
+    {
+        return static_cast<int>(node.real());
+    }
+    std::cerr << name << " must be numeric, aborting..." << std::endl;
+    exit(-1);
+}
+
+GlassPlaneMappingConfig LoadGlassPlaneMappingConfig(const cv::FileStorage& fsSettings)
+{
+    GlassPlaneMappingConfig config;
+    config.frame_mask_white_threshold = ReadOptionalInt(fsSettings, "GlassPlaneMapping.FrameMaskWhiteThreshold", config.frame_mask_white_threshold);
+    config.pointcloud_mask_threshold = ReadOptionalInt(fsSettings, "GlassPlaneMapping.PointCloudMaskThreshold", config.pointcloud_mask_threshold);
+    config.min_plane_consecutive_obs = ReadOptionalInt(fsSettings, "GlassPlaneMapping.MinPlaneConsecutiveObs", config.min_plane_consecutive_obs);
+    config.min_frame_glass_ratio = ReadOptionalFloat(fsSettings, "GlassPlaneMapping.MinFrameGlassRatio", config.min_frame_glass_ratio);
+    config.min_block_glass_ratio = ReadOptionalFloat(fsSettings, "GlassPlaneMapping.MinBlockGlassRatio", config.min_block_glass_ratio);
+    config.ransac_distance_threshold = ReadOptionalFloat(fsSettings, "GlassPlaneMapping.RansacDistanceThreshold", config.ransac_distance_threshold);
+    config.min_ransac_inlier_ratio = ReadOptionalFloat(fsSettings, "GlassPlaneMapping.MinRansacInlierRatio", config.min_ransac_inlier_ratio);
+    config.max_ransac_mean_distance = ReadOptionalFloat(fsSettings, "GlassPlaneMapping.MaxRansacMeanDistance", config.max_ransac_mean_distance);
+    config.plane_attach_dist = ReadOptionalFloat(fsSettings, "GlassPlaneMapping.PlaneAttachDist", config.plane_attach_dist);
+    config.plane_match_thr_ang = ReadOptionalFloat(fsSettings, "GlassPlaneMapping.PlaneMatchAngleCos", config.plane_match_thr_ang);
+    config.plane_match_thr_d = ReadOptionalFloat(fsSettings, "GlassPlaneMapping.PlaneMatchDistance", config.plane_match_thr_d);
+    return config;
+}
+
+} // namespace
+
 
 Verbose::eLevel Verbose::th = Verbose::VERBOSITY_NORMAL;
 
@@ -48,9 +107,10 @@ Verbose::eLevel Verbose::th = Verbose::VERBOSITY_NORMAL;
  * @param strSequence 序列名,在跟踪线程和局部建图线程用得到
  */
 System::System(const string &strVocFile, const string &strSettingsFile, const eSensor sensor,
-               const bool bUseViewer, const int initFr, const string &strSequence):
+               const bool bUseViewer, const int initFr, const string &strSequence, bool bUsingGlassPlane, bool bUsingGlassLine):
     mSensor(sensor), mpViewer(static_cast<Viewer*>(NULL)), mbReset(false), mbResetActiveMap(false),
-    mbActivateLocalizationMode(false), mbDeactivateLocalizationMode(false), mbShutDown(false)
+    mbActivateLocalizationMode(false), mbDeactivateLocalizationMode(false), mbShutDown(false),
+    mbUsingGlassLine(bUsingGlassLine),mbUsingGlassPlane(bUsingGlassPlane)
 {
     // Output welcome message
     cout << endl <<
@@ -125,6 +185,12 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     // ORBSLAM3新加的多地图管理功能，这里加载Atlas标识符
     bool loadedAtlas = false;
+
+
+    // for point cloud resolution
+    float resolution = fsSettings["PointCloudMapping.Resolution"];
+    mGlassPlaneMappingConfig = LoadGlassPlaneMappingConfig(fsSettings);
+
 
     if(mStrLoadAtlasFromFile.empty())
     {
@@ -209,17 +275,20 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
     mpFrameDrawer = new FrameDrawer(mpAtlas);
     mpMapDrawer = new MapDrawer(mpAtlas, strSettingsFile, settings_);
 
+    // Initialize pointcloud mapping
+    mpPointCloudMapping = make_shared<PointCloudMapping>( resolution );
+
     //Initialize the Tracking thread
     //(it will live in the main thread of execution, the one that called this constructor)
     // 创建跟踪线程（主线程）,不会立刻开启,会在对图像和imu预处理后在main主线程种执行
     cout << "Seq. Name: " << strSequence << endl;
     mpTracker = new Tracking(this, mpVocabulary, mpFrameDrawer, mpMapDrawer,
-                             mpAtlas, mpKeyFrameDatabase, strSettingsFile, mSensor, settings_, strSequence);
+                             mpAtlas, mpPointCloudMapping, mpKeyFrameDatabase, strSettingsFile, mSensor, settings_, strSequence,mbUsingGlassPlane,mbUsingGlassLine);
 
     //Initialize the Local Mapping thread and launch
     //创建并开启local mapping线程
     mpLocalMapper = new LocalMapping(this, mpAtlas, mSensor==MONOCULAR || mSensor==IMU_MONOCULAR,
-                                     mSensor==IMU_MONOCULAR || mSensor==IMU_STEREO || mSensor==IMU_RGBD, strSequence);
+                                     mSensor==IMU_MONOCULAR || mSensor==IMU_STEREO || mSensor==IMU_RGBD, strSequence,mbUsingGlassPlane,mbUsingGlassLine);
     mptLocalMapping = new thread(&ORB_SLAM3::LocalMapping::Run,mpLocalMapper);
     mpLocalMapper->mInitFr = initFr;
 
@@ -253,6 +322,29 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
 
     mpLoopCloser->SetTracker(mpTracker);
     mpLoopCloser->SetLocalMapper(mpLocalMapper);
+
+    if(mbUsingGlassPlane){
+        std::cout << "GlassPlaneMapping thresholds:"
+                  << " frame_mask_white=" << mGlassPlaneMappingConfig.frame_mask_white_threshold
+                  << " pointcloud_mask=" << mGlassPlaneMappingConfig.pointcloud_mask_threshold
+                  << " min_frame_ratio=" << mGlassPlaneMappingConfig.min_frame_glass_ratio
+                  << " min_block_ratio=" << mGlassPlaneMappingConfig.min_block_glass_ratio
+                  << " ransac_dist=" << mGlassPlaneMappingConfig.ransac_distance_threshold
+                  << " min_inlier_ratio=" << mGlassPlaneMappingConfig.min_ransac_inlier_ratio
+                  << " max_mean_dist=" << mGlassPlaneMappingConfig.max_ransac_mean_distance
+                  << " attach_dist=" << mGlassPlaneMappingConfig.plane_attach_dist
+                  << " match_cos=" << mGlassPlaneMappingConfig.plane_match_thr_ang
+                  << " match_dist=" << mGlassPlaneMappingConfig.plane_match_thr_d
+                  << " min_consecutive=" << mGlassPlaneMappingConfig.min_plane_consecutive_obs
+                  << std::endl;
+
+        mpLocalGlassMapper=new LocalGlassPlaneMapping(this, mpAtlas, mSensor==MONOCULAR || mSensor==IMU_MONOCULAR,
+                                                      mpPointCloudMapping.get(), mGlassPlaneMappingConfig);
+        
+        mpTracker->SetGlassPlaneMapper(mpLocalGlassMapper);
+        mpLocalMapper->SetGlassPlaneMapper(mpLocalGlassMapper);
+
+    }
 
     //usleep(10*1000*1000);
 
@@ -421,6 +513,97 @@ Sophus::SE3f System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const
             mpTracker->GrabImuData(vImuMeas[i_imu]);
 
     Sophus::SE3f Tcw = mpTracker->GrabImageRGBD(imToFeed,imDepthToFeed,timestamp,filename);
+
+    unique_lock<mutex> lock2(mMutexState);
+    mTrackingState = mpTracker->mState;
+    mTrackedMapPoints = mpTracker->mCurrentFrame.mvpMapPoints;
+    mTrackedKeyPointsUn = mpTracker->mCurrentFrame.mvKeysUn;
+    return Tcw;
+}
+
+
+Sophus::SE3f System::TrackRGBD_glassplane(const cv::Mat &im, const cv::Mat &depthmap, const cv::Mat &mask, const vector<cv::Mat> &vDepthGS, const cv::Mat &imDepthGSFused, const double &timestamp, const vector<IMU::Point>& vImuMeas, string filename)
+{
+    if(mSensor!=RGBD  && mSensor!=IMU_RGBD)
+    {
+        cerr << "ERROR: you called TrackRGBD but input sensor was not set to RGBD." << endl;
+        exit(-1);
+    }
+
+    cv::Mat imToFeed = im.clone();
+    cv::Mat imDepthToFeed = depthmap.clone();
+    cv::Mat maskToFeed = mask.clone();
+    cv::Mat imDepthGSFusedToFeed = imDepthGSFused.clone();
+    vector<cv::Mat> vDepthGSToFeed;
+    vDepthGSToFeed.reserve(vDepthGS.size());
+    for(const cv::Mat &imDepthGSBlock : vDepthGS)
+    {
+        vDepthGSToFeed.push_back(imDepthGSBlock.clone());
+    }
+
+    // 如果实际的图像和yaml里写的相机640,480的尺寸不一样，则needToResize的flag变为1，则将图像resize。
+    if(settings_ && settings_->needToResize()){
+        cv::Mat resizedIm;
+        cv::resize(im,resizedIm,settings_->newImSize());
+        imToFeed = resizedIm;
+        cv::resize(depthmap,imDepthToFeed,settings_->newImSize());
+        cv::resize(mask,maskToFeed,settings_->newImSize());
+        cv::resize(imDepthGSFused,imDepthGSFusedToFeed,settings_->newImSize());
+        vDepthGSToFeed.clear();
+        vDepthGSToFeed.reserve(vDepthGS.size());
+        for(const cv::Mat &imDepthGSBlock : vDepthGS)
+        {
+            cv::Mat resizedDepthGSBlock;
+            cv::resize(imDepthGSBlock,resizedDepthGSBlock,settings_->newImSize());
+            vDepthGSToFeed.push_back(resizedDepthGSBlock);
+        }
+    }
+
+    // Check mode change
+    {
+        unique_lock<mutex> lock(mMutexMode);
+        if(mbActivateLocalizationMode)
+        {
+            mpLocalMapper->RequestStop();
+
+            // Wait until Local Mapping has effectively stopped
+            while(!mpLocalMapper->isStopped())
+            {
+                usleep(1000);
+            }
+
+            mpTracker->InformOnlyTracking(true);
+            mbActivateLocalizationMode = false;
+        }
+        if(mbDeactivateLocalizationMode)
+        {
+            mpTracker->InformOnlyTracking(false);
+            mpLocalMapper->Release();
+            mbDeactivateLocalizationMode = false;
+        }
+    }
+
+    // Check reset
+    {
+        unique_lock<mutex> lock(mMutexReset);
+        if(mbReset)
+        {
+            mpTracker->Reset();
+            mbReset = false;
+            mbResetActiveMap = false;
+        }
+        else if(mbResetActiveMap)
+        {
+            mpTracker->ResetActiveMap();
+            mbResetActiveMap = false;
+        }
+    }
+
+    if (mSensor == System::IMU_RGBD)
+        for(size_t i_imu = 0; i_imu < vImuMeas.size(); i_imu++)
+            mpTracker->GrabImuData(vImuMeas[i_imu]);
+
+    Sophus::SE3f Tcw = mpTracker->GrabImageRGBD_glassplane(imToFeed,imDepthToFeed,maskToFeed,vDepthGSToFeed,imDepthGSFusedToFeed,timestamp,filename);
 
     unique_lock<mutex> lock2(mMutexState);
     mTrackingState = mpTracker->mState;
@@ -635,7 +818,18 @@ void System::SaveTrajectoryTUM(const string &filename)
     }
 
     vector<KeyFrame*> vpKFs = mpAtlas->GetAllKeyFrames();
+    if(vpKFs.empty())
+    {
+        cerr << "ERROR: SaveTrajectoryTUM found no keyframes." << endl;
+        return;
+    }
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
+
+    list<Sophus::SE3f> relativeFramePoses;
+    list<KeyFrame*> references;
+    list<double> frameTimes;
+    list<bool> lostFlags;
+    mpTracker->GetTrajectorySnapshot(relativeFramePoses, references, frameTimes, lostFlags);
 
     // Transform all keyframes so that the first keyframe is at the origin.
     // After a loop closure the first keyframe might not be at the origin.
@@ -651,11 +845,11 @@ void System::SaveTrajectoryTUM(const string &filename)
 
     // For each frame we have a reference keyframe (lRit), the timestamp (lT) and a flag
     // which is true when tracking failed (lbL).
-    list<ORB_SLAM3::KeyFrame*>::iterator lRit = mpTracker->mlpReferences.begin();
-    list<double>::iterator lT = mpTracker->mlFrameTimes.begin();
-    list<bool>::iterator lbL = mpTracker->mlbLost.begin();
-    for(list<Sophus::SE3f>::iterator lit=mpTracker->mlRelativeFramePoses.begin(),
-        lend=mpTracker->mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++)
+    list<ORB_SLAM3::KeyFrame*>::iterator lRit = references.begin();
+    list<double>::iterator lT = frameTimes.begin();
+    list<bool>::iterator lbL = lostFlags.begin();
+    for(list<Sophus::SE3f>::iterator lit=relativeFramePoses.begin(),
+        lend=relativeFramePoses.end();lit!=lend;lit++, lRit++, lT++, lbL++)
     {
         if(*lbL)
             continue;
@@ -690,6 +884,11 @@ void System::SaveKeyFrameTrajectoryTUM(const string &filename)
     cout << endl << "Saving keyframe trajectory to " << filename << " ..." << endl;
 
     vector<KeyFrame*> vpKFs = mpAtlas->GetAllKeyFrames();
+    if(vpKFs.empty())
+    {
+        cerr << "ERROR: SaveKeyFrameTrajectoryTUM found no keyframes." << endl;
+        return;
+    }
     sort(vpKFs.begin(),vpKFs.end(),KeyFrame::lId);
 
     // Transform all keyframes so that the first keyframe is at the origin.
@@ -1623,4 +1822,3 @@ string System::CalculateCheckSum(string filename, int type)
 }
 
 } //namespace ORB_SLAM
-

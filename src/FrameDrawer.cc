@@ -327,6 +327,39 @@ cv::Mat FrameDrawer::DrawRightFrame(float imageScale)
 }
 
 
+cv::Mat FrameDrawer::DrawDepthVis(){
+    if(mDepth.empty()){
+        return cv::Mat();
+    }
+    cv::Mat depth_8u,depth_vis;
+    mDepth.convertTo(depth_8u, CV_8U, 0.03);
+    applyColorMap(depth_8u, depth_vis,cv::COLORMAP_JET);
+    return depth_vis;
+
+}
+
+cv::Mat FrameDrawer::GetMask(){
+    return mMask.clone();
+}
+std::vector<cv::Mat> FrameDrawer::GetDepthGS(){
+    std::vector<cv::Mat> vDepthGSClones;
+    vDepthGSClones.reserve(mvDepthGS.size());
+    for(const cv::Mat &imDepthGSBlock : mvDepthGS)
+    {
+        vDepthGSClones.push_back(imDepthGSBlock.clone());
+    }
+    return vDepthGSClones;
+}
+cv::Mat FrameDrawer::DrawDepthGSVis(){
+    if(mDepthGSFused.empty()){
+        return cv::Mat();
+    }
+    cv::Mat depth_8u,depth_vis;
+    mDepthGSFused.convertTo(depth_8u, CV_8U, 0.03);
+    applyColorMap(depth_8u, depth_vis,cv::COLORMAP_JET);
+    return depth_vis;
+
+}
 
 void FrameDrawer::DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText)
 {
@@ -371,6 +404,15 @@ void FrameDrawer::Update(Tracking *pTracker)
 {
     unique_lock<mutex> lock(mMutex);
     pTracker->mImGray.copyTo(mIm);
+    pTracker->mDepth.copyTo(mDepth);
+    pTracker->mMask.copyTo(mMask);
+    pTracker->mDepthGSFused.copyTo(mDepthGSFused);
+    mvDepthGS.clear();
+    mvDepthGS.reserve(pTracker->mvDepthGS.size());
+    for(const cv::Mat &imDepthGSBlock : pTracker->mvDepthGS)
+    {
+        mvDepthGS.push_back(imDepthGSBlock.clone());
+    }
     mvCurrentKeys=pTracker->mCurrentFrame.mvKeys;
     mThDepth = pTracker->mCurrentFrame.mThDepth;
     mvCurrentDepth = pTracker->mCurrentFrame.mvDepth;

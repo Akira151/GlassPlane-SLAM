@@ -29,11 +29,11 @@
 namespace ORB_SLAM3
 {
 
-class Plane
+class PlaneAR
 {
 public:
-    Plane(const std::vector<MapPoint*> &vMPs, const cv::Mat &Tcw);
-    Plane(const float &nx, const float &ny, const float &nz, const float &ox, const float &oy, const float &oz);
+    PlaneAR(const std::vector<MapPoint*> &vMPs, const cv::Mat &Tcw);
+    PlaneAR(const float &nx, const float &ny, const float &nz, const float &ox, const float &oy, const float &oz);
 
     void Recompute();
 
@@ -90,10 +90,10 @@ private:
     void DrawImageTexture(pangolin::GlTexture &imageTexture, cv::Mat &im);
     void DrawCube(const float &size, const float x=0, const float y=0, const float z=0);
     void DrawPlane(int ndivs, float ndivsize);
-    void DrawPlane(Plane* pPlane, int ndivs, float ndivsize);
+    void DrawPlane(PlaneAR* pPlane, int ndivs, float ndivsize);
     void DrawTrackedPoints(const std::vector<cv::KeyPoint> &vKeys, const std::vector<MapPoint*> &vMPs, cv::Mat &im);
 
-    Plane* DetectPlane(const cv::Mat Tcw, const std::vector<MapPoint*> &vMPs, const int iterations=50);
+    PlaneAR* DetectPlane(const cv::Mat Tcw, const std::vector<MapPoint*> &vMPs, const int iterations=50);
 
     // frame rate
     float mFPS, mT;

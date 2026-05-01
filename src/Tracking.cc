@@ -29,11 +29,15 @@
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
 
+#include "System.h"
+
 #include <iostream>
 
 #include <mutex>
 #include <chrono>
-
+// for pointcloud mapping and viewing
+#include "pointcloudmapping.h"
+#include "LocalGlassPlaneMapping.h"
 
 using namespace std;
 
@@ -50,6 +54,18 @@ using namespace std;
 namespace ORB_SLAM3
 {
 
+void Tracking::GetTrajectorySnapshot(list<Sophus::SE3f> &relativeFramePoses,
+                                     list<KeyFrame*> &references,
+                                     list<double> &frameTimes,
+                                     list<bool> &lostFlags) const
+{
+    lock_guard<mutex> lock(mMutexTrajectory);
+    relativeFramePoses = mlRelativeFramePoses;
+    references = mlpReferences;
+    frameTimes = mlFrameTimes;
+    lostFlags = mlbLost;
+}
+
 /**
  * @brief 跟踪线程构造函数
  * @param pSys 系统类指针
@@ -64,12 +80,13 @@ namespace ORB_SLAM3
  * @param _strSeqName 序列名字，没用到
  */
 Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer, MapDrawer *pMapDrawer,
-    Atlas *pAtlas, KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor, Settings* settings, const string &_nameSeq)
-    : mState(NO_IMAGES_YET), mSensor(sensor), mTrackedFr(0), mbStep(false),
+    Atlas *pAtlas, shared_ptr<PointCloudMapping> pPointCloud, KeyFrameDatabase* pKFDB, const string &strSettingPath, const int sensor, Settings* settings, const string &_nameSeq, bool bUsingGlassPlane, bool bUsingGlassLine)
+    : mState(NO_IMAGES_YET), mSensor(sensor), mTrackedFr(0), mbStep(false),mpPointCloudMapping( pPointCloud ),
     mbOnlyTracking(false), mbMapUpdated(false), mbVO(false), mpORBVocabulary(pVoc), mpKeyFrameDB(pKFDB),
     mbReadyToInitializate(false), mpSystem(pSys), mpViewer(NULL), bStepByStep(false),
     mpFrameDrawer(pFrameDrawer), mpMapDrawer(pMapDrawer), mpAtlas(pAtlas), mnLastRelocFrameId(0), time_recently_lost(5.0),
-    mnInitialFrameId(0), mbCreatedMap(false), mnFirstFrameId(0), mpCamera2(nullptr), mpLastKeyFrame(static_cast<KeyFrame*>(NULL))
+    mnInitialFrameId(0), mbCreatedMap(false), mnFirstFrameId(0), mpCamera2(nullptr), mpLastKeyFrame(static_cast<KeyFrame*>(NULL)),
+    mbUsingGlassLine(bUsingGlassLine),mbUsingGlassPlane(bUsingGlassPlane)
 {
     // Load camera parameters from settings file
     // Step 1 从配置文件中加载相机参数
@@ -1480,6 +1497,11 @@ void Tracking::SetLocalMapper(LocalMapping *pLocalMapper)
     mpLocalMapper=pLocalMapper;
 }
 
+void Tracking::SetGlassPlaneMapper(LocalGlassPlaneMapping *pLocalGlassMapper)
+{
+    mpLocalGlassMapper=pLocalGlassMapper;
+}
+
 /**
  * @brief 设置回环器
  * @param pLoopClosing 回环类
@@ -1613,6 +1635,10 @@ Sophus::SE3f Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat 
 Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const double &timestamp, string filename)
 {
     mImGray = imRGB;
+    mDepth=imD;
+    mImRGB=imRGB;
+    
+
     cv::Mat imDepth = imD;
 
     // step 1：将RGB或RGBA图像转为灰度图像
@@ -1635,6 +1661,8 @@ Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, co
     if((fabs(mDepthMapFactor-1.0f)>1e-5) && imDepth.type()!=CV_32F)
         imDepth.convertTo(imDepth,CV_32F,mDepthMapFactor);
 
+    mDepth_float=imDepth.clone();
+
     // Step 3：构造Frame
     if (mSensor == System::RGBD)
         mCurrentFrame = Frame(mImGray,imDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
@@ -1653,6 +1681,92 @@ Sophus::SE3f Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, co
     // 返回当前帧的位姿
     return mCurrentFrame.GetPose();
 }
+
+Sophus::SE3f Tracking::GrabImageRGBD_glassplane(const cv::Mat &imRGB,const cv::Mat &imD,const cv::Mat &mask,const vector<cv::Mat> &vDepthGS, const cv::Mat &imDepthGSFused, const double &timestamp, string filename)
+{
+    mImGray = imRGB;
+    mDepth=imD;
+    mImRGB=imRGB;
+    mMask=mask;
+    mDepthGSFused = imDepthGSFused.clone();
+    mvDepthGS.clear();
+    mvDepthGS.reserve(vDepthGS.size());
+    for(const cv::Mat &imDepthGSBlock : vDepthGS)
+    {
+        mvDepthGS.push_back(imDepthGSBlock.clone());
+    }
+
+    mvDepthGSFloat.clear();
+    mvDepthGSFloat.reserve(mvDepthGS.size());
+    for(const cv::Mat &imDepthGSBlock : mvDepthGS)
+    {
+        cv::Mat imDepthGSBlockFloat;
+        if((fabs(mDepthMapFactor-1.0f)>1e-5) && imDepthGSBlock.type()!=CV_32F)
+            imDepthGSBlock.convertTo(imDepthGSBlockFloat,CV_32F,mDepthMapFactor);
+        else if(imDepthGSBlock.type()!=CV_32F)
+            imDepthGSBlock.convertTo(imDepthGSBlockFloat,CV_32F);
+        else
+            imDepthGSBlockFloat = imDepthGSBlock.clone();
+
+        mvDepthGSFloat.push_back(imDepthGSBlockFloat);
+    }
+    
+
+    cv::Mat imDepth = imD;
+
+    // step 1：将RGB或RGBA图像转为灰度图像
+    if(mImGray.channels()==3)
+    {
+        if(mbRGB)
+            cvtColor(mImGray,mImGray,cv::COLOR_RGB2GRAY);
+        else
+            cvtColor(mImGray,mImGray,cv::COLOR_BGR2GRAY);
+    }
+    else if(mImGray.channels()==4)
+    {
+        if(mbRGB)
+            cvtColor(mImGray,mImGray,cv::COLOR_RGBA2GRAY);
+        else
+            cvtColor(mImGray,mImGray,cv::COLOR_BGRA2GRAY);
+    }
+
+    // Step 2 ：将深度相机的disparity转为Depth , 也就是转换成为真正尺度下的深度
+    if((fabs(mDepthMapFactor-1.0f)>1e-5) && imDepth.type()!=CV_32F)
+        imDepth.convertTo(imDepth,CV_32F,mDepthMapFactor);
+
+    mDepth_float=imDepth.clone();
+
+
+    if((fabs(mDepthMapFactor-1.0f)>1e-5) && mDepthGSFused.type()!=CV_32F)
+        mDepthGSFused.convertTo(mDepthGSFloatFused,CV_32F,mDepthMapFactor);
+    else if(mDepthGSFused.type()!=CV_32F)
+        mDepthGSFused.convertTo(mDepthGSFloatFused,CV_32F);
+    else
+        mDepthGSFloatFused = mDepthGSFused.clone();
+    
+
+    // Step 3：构造Frame
+    if (mSensor == System::RGBD)
+        // 注意：传入的是Float格式的depth，而不是uint16_t类型的。因为已经和DepthMapFactor融合.
+        mCurrentFrame = Frame(mImGray,imRGB,imDepth,mask,mvDepthGSFloat,mDepthGSFloatFused,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera);
+    
+    else if(mSensor == System::IMU_RGBD){
+        std::cerr<<"error when tracking::grabimageRGBD_glassplane: IMU_RGBD mode is not avalible yet."<<std::endl;
+        mCurrentFrame = Frame(mImGray,imDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth,mpCamera,&mLastFrame,*mpImuCalib);
+    }
+    mCurrentFrame.mNameFile = filename;
+    mCurrentFrame.mnDataset = mnNumDataset;
+
+#ifdef REGISTER_TIMES
+    vdORBExtract_ms.push_back(mCurrentFrame.mTimeORB_Ext);
+#endif
+    // Step 4：跟踪
+    Track();
+
+    // 返回当前帧的位姿
+    return mCurrentFrame.GetPose();
+}
+
 
 /**
  * @brief 输入左目RGB或RGBA图像，输出世界坐标系到该帧相机坐标系的变换矩阵
@@ -2637,6 +2751,7 @@ void Tracking::Track()
     {
         // Store frame pose information to retrieve the complete camera trajectory afterwards.
         // Step 11：记录位姿信息，用于最后保存所有的轨迹
+        lock_guard<mutex> lock(mMutexTrajectory);
         if(mCurrentFrame.isSet())
         {
             // 计算相对姿态Tcr = Tcw * Twr, Twr = Trw^-1
@@ -2646,7 +2761,7 @@ void Tracking::Track()
             mlFrameTimes.push_back(mCurrentFrame.mTimeStamp);
             mlbLost.push_back(mState==LOST);
         }
-        else
+        else if(!mlRelativeFramePoses.empty())
         {
             // This can happen if tracking is lost
             // 如果跟踪失败，则相对位姿使用上一次值
@@ -3251,7 +3366,11 @@ void Tracking::UpdateLastFrame()
     // 上一普通帧的参考关键帧，注意这里用的是参考关键帧（位姿准）而不是上上一帧的普通帧
     KeyFrame* pRef = mLastFrame.mpReferenceKF;
     // ref_keyframe 到 lastframe的位姿变换
-    Sophus::SE3f Tlr = mlRelativeFramePoses.back();
+    Sophus::SE3f Tlr;
+    {
+        lock_guard<mutex> lock(mMutexTrajectory);
+        Tlr = mlRelativeFramePoses.back();
+    }
     // 将上一帧的世界坐标系下的位姿计算出来
     // l:last, r:reference, w:world
     // Tlw = Tlr*Trw 
@@ -3967,6 +4086,18 @@ void Tracking::CreateNewKeyFrame()
     // 插入好了，允许局部建图停止
     mpLocalMapper->SetNotStop(false);
 
+
+    // Insert keyframes into the dense point cloud viewer. Prefer fused depth when available,
+    // otherwise fall back to the raw RGB-D depth map.
+    cv::Mat depthForPointCloud;
+    if(!mDepthGSFloatFused.empty())
+        depthForPointCloud = mDepthGSFloatFused;
+    else if(!mDepth_float.empty())
+        depthForPointCloud = mDepth_float;
+
+    if(!depthForPointCloud.empty())
+        mpPointCloudMapping->insertKeyFrame(pKF, mImRGB, depthForPointCloud);
+
     // 当前帧成为新的关键帧，更新
     mnLastKeyFrameId = mCurrentFrame.mnId;
     mpLastKeyFrame = pKF;
@@ -4591,10 +4722,13 @@ void Tracking::Reset(bool bLocMap)
     mbReadyToInitializate = false;
     mbSetInit=false;
 
-    mlRelativeFramePoses.clear();
-    mlpReferences.clear();
-    mlFrameTimes.clear();
-    mlbLost.clear();
+    {
+        lock_guard<mutex> lock(mMutexTrajectory);
+        mlRelativeFramePoses.clear();
+        mlpReferences.clear();
+        mlFrameTimes.clear();
+        mlbLost.clear();
+    }
     mCurrentFrame = Frame();
     mnLastRelocFrameId = 0;
     mLastFrame = Frame();
@@ -4652,38 +4786,39 @@ void Tracking::ResetActiveMap(bool bLocMap)
 
     mbReadyToInitializate = false;
 
-    list<bool> lbLost;
-    // lbLost.reserve(mlbLost.size());
-    unsigned int index = mnFirstFrameId;
-    cout << "mnFirstFrameId = " << mnFirstFrameId << endl;
-    for(Map* pMap : mpAtlas->GetAllMaps())
     {
-        if(pMap->GetAllKeyFrames().size() > 0)
+        lock_guard<mutex> lock(mMutexTrajectory);
+        list<bool> lbLost;
+        unsigned int index = mnFirstFrameId;
+        cout << "mnFirstFrameId = " << mnFirstFrameId << endl;
+        for(Map* pMap : mpAtlas->GetAllMaps())
         {
-            if(index > pMap->GetLowerKFID())
-                index = pMap->GetLowerKFID();
-        }
-    }
-
-    //cout << "First Frame id: " << index << endl;
-    int num_lost = 0;
-    cout << "mnInitialFrameId = " << mnInitialFrameId << endl;
-
-    for(list<bool>::iterator ilbL = mlbLost.begin(); ilbL != mlbLost.end(); ilbL++)
-    {
-        if(index < mnInitialFrameId)
-            lbLost.push_back(*ilbL);
-        else
-        {
-            lbLost.push_back(true);
-            num_lost += 1;
+            if(pMap->GetAllKeyFrames().size() > 0)
+            {
+                if(index > pMap->GetLowerKFID())
+                    index = pMap->GetLowerKFID();
+            }
         }
 
-        index++;
-    }
-    cout << num_lost << " Frames set to lost" << endl;
+        int num_lost = 0;
+        cout << "mnInitialFrameId = " << mnInitialFrameId << endl;
 
-    mlbLost = lbLost;
+        for(list<bool>::iterator ilbL = mlbLost.begin(); ilbL != mlbLost.end(); ilbL++)
+        {
+            if(index < mnInitialFrameId)
+                lbLost.push_back(*ilbL);
+            else
+            {
+                lbLost.push_back(true);
+                num_lost += 1;
+            }
+
+            index++;
+        }
+        cout << num_lost << " Frames set to lost" << endl;
+
+        mlbLost = lbLost;
+    }
 
     mnInitialFrameId = mCurrentFrame.mnId;
     mnLastRelocFrameId = mCurrentFrame.mnId;
@@ -4771,28 +4906,31 @@ void Tracking::UpdateFrameIMU(const float s, const IMU::Bias &b, KeyFrame* pCurr
     Map * pMap = pCurrentKeyFrame->GetMap();
     unsigned int index = mnFirstFrameId;
 
-    // 每一帧的参考关键帧
-    list<ORB_SLAM3::KeyFrame*>::iterator lRit = mlpReferences.begin();
-    list<bool>::iterator lbL = mlbLost.begin();  // 对应帧是否跟踪丢失
-
-    // mlRelativeFramePoses 存放的是Tcr
-    // 三个变量一一对应
-    // mlRelativeFramePoses用于输出位姿，因此初始化之前里面数据没有尺度，所以要更新下尺度
-    for(auto lit=mlRelativeFramePoses.begin(),lend=mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lbL++)
     {
-        if(*lbL)
-            continue;
+        lock_guard<mutex> lock(mMutexTrajectory);
+        // 每一帧的参考关键帧
+        list<ORB_SLAM3::KeyFrame*>::iterator lRit = mlpReferences.begin();
+        list<bool>::iterator lbL = mlbLost.begin();  // 对应帧是否跟踪丢失
 
-        KeyFrame* pKF = *lRit;
-
-        while(pKF->isBad())
+        // mlRelativeFramePoses 存放的是Tcr
+        // 三个变量一一对应
+        // mlRelativeFramePoses用于输出位姿，因此初始化之前里面数据没有尺度，所以要更新下尺度
+        for(auto lit=mlRelativeFramePoses.begin(),lend=mlRelativeFramePoses.end();lit!=lend;lit++, lRit++, lbL++)
         {
-            pKF = pKF->GetParent();
-        }
+            if(*lbL)
+                continue;
 
-        if(pKF->GetMap() == pMap)
-        {
-            (*lit).translation() *= s;
+            KeyFrame* pKF = *lRit;
+
+            while(pKF->isBad())
+            {
+                pKF = pKF->GetParent();
+            }
+
+            if(pKF->GetMap() == pMap)
+            {
+                (*lit).translation() *= s;
+            }
         }
     }
     // 设置偏置

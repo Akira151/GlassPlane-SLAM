@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8)
 project(ORB_SLAM3)
 
 IF(NOT CMAKE_BUILD_TYPE)
-  SET(CMAKE_BUILD_TYPE Release)
+  SET(CMAKE_BUILD_TYPE Debug)
 ENDIF()
 
 MESSAGE("Build type: " ${CMAKE_BUILD_TYPE})
@@ -12,27 +12,33 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall   -O3")
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -march=native")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -march=native")
 
-# Check C++11 or C++0x support
+# Check c++17 or C++0x support
 include(CheckCXXCompilerFlag)
-CHECK_CXX_COMPILER_FLAG("-std=c++11" COMPILER_SUPPORTS_CXX11)
+CHECK_CXX_COMPILER_FLAG("-std=c++17" COMPILER_SUPPORTS_CXX17)
 CHECK_CXX_COMPILER_FLAG("-std=c++0x" COMPILER_SUPPORTS_CXX0X)
-if(COMPILER_SUPPORTS_CXX11)
-   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-   add_definitions(-DCOMPILEDWITHC11)
-   message(STATUS "Using flag -std=c++11.")
+if(COMPILER_SUPPORTS_CXX17)
+   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+   add_definitions(-DCOMPILEDWITHC17)
+   message(STATUS "Using flag -std=c++17.")
 elseif(COMPILER_SUPPORTS_CXX0X)
    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
    add_definitions(-DCOMPILEDWITHC0X)
    message(STATUS "Using flag -std=c++0x.")
 else()
-   message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} has no C++11 support. Please use a different C++ compiler.")
+   message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} has no c++17 support. Please use a different C++ compiler.")
 endif()
+
+# eigen不对齐
+add_definitions(-DEIGEN_DONT_VECTORIZE)
+add_definitions(-DEIGEN_MAX_ALIGN_BYTES=0)
+add_definitions(-DEIGEN_DONT_ALIGN_STATICALLY)
 
 LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake_modules)
 
+
 # 要保证整个工程的opencv版本一致，包括dbow，源码以及ros相关的
 # 3 4 都可以正常运行
-find_package(OpenCV 3.2)
+find_package(OpenCV 4)
    if(NOT OpenCV_FOUND)
       message(FATAL_ERROR "OpenCV > 3.2 not found.")
    endif()
@@ -44,6 +50,25 @@ find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
 find_package(realsense2)
 
+# adding for point cloud viewer and mapper
+find_package( PCL 1.7 REQUIRED )
+message(STATUS ${PCL_INCLUDE_DIRS}  )
+
+# message(STATUS "PCL_LIBRARIES = ${PCL_LIBRARIES}")
+# # list(REMOVE_ITEM PCL_LIBRARIES /lib/x86_64-linux-gnu/libvtkfmt-9.1.so.1)
+# list(FILTER PCL_LIBRARIES EXCLUDE REGEX "vtkfmt")
+# message(STATUS "PCL_LIBRARIES_AFTER_DELETE_VTKFMT = ${PCL_LIBRARIES}")
+
+
+find_package(fmt REQUIRED)
+message(STATUS "===== fmt info =====")
+message(STATUS "fmt_FOUND = ${fmt_FOUND}")
+message(STATUS "fmt_VERSION = ${fmt_VERSION}")
+message(STATUS "fmt_INCLUDE_DIRS = ${fmt_INCLUDE_DIRS}")
+message(STATUS "fmt_LIBRARIES = ${fmt_LIBRARIES}")
+
+find_package(spdlog REQUIRED)
+
 include_directories(
 ${PROJECT_SOURCE_DIR}
 ${PROJECT_SOURCE_DIR}/include
@@ -51,7 +76,12 @@ ${PROJECT_SOURCE_DIR}/include/CameraModels
 ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
 ${EIGEN3_INCLUDE_DIR}
 ${Pangolin_INCLUDE_DIRS}
+
+${PCL_INCLUDE_DIRS}
 )
+
+add_definitions( ${PCL_DEFINITIONS} )
+link_directories( ${PCL_LIBRARY_DIRS} )
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 
@@ -84,6 +114,13 @@ src/GeometricTools.cc
 src/TwoViewReconstruction.cc
 src/Config.cc
 src/Settings.cc
+src/pointcloudmapping.cc
+src/keyplane.cc
+src/LocalGlassPlaneMapping.cc
+src/landmark_plane.cc
+src/OptimizableTypes_plane.cpp
+src/Optimizer_plane.cc
+
 include/System.h
 include/Tracking.h
 include/LocalMapping.h
@@ -113,11 +150,24 @@ include/GeometricTools.h
 include/TwoViewReconstruction.h
 include/SerializationUtils.h
 include/Config.h
-include/Settings.h)
+include/Settings.h
+include/pointcloudmapping.h
+include/GlassPlaneMappingConfig.h
+include/LocalGlassPlaneMapping.h
+include/keyplane.h
+include/landmark_plane.h
+include/OptimizableTypes_plane.h
+include/Optimizer_plane.h
+)
 
 add_subdirectory(Thirdparty/g2o)
 
+
+
 target_link_libraries(${PROJECT_NAME}
+fmt::fmt
+spdlog::spdlog
+
 ${OpenCV_LIBS}
 ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
@@ -125,6 +175,8 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
 -lboost_serialization
 -lcrypto
+
+${PCL_LIBRARIES}
 )
 
 # If RealSense SDK is found the library is added and its examples compiled
@@ -146,6 +198,14 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/RGB-D)
 add_executable(rgbd_tum
         Examples/RGB-D/rgbd_tum.cc)
 target_link_libraries(rgbd_tum ${PROJECT_NAME})
+
+
+add_executable(rgbd_tum_plane
+        Examples/RGB-D/rgbd_tum_plane.cc)
+target_link_libraries(rgbd_tum_plane ${PROJECT_NAME})
+target_link_libraries(rgbd_tum_plane PRIVATE stdc++fs)
+
+
 
 if(realsense2_FOUND)
     add_executable(rgbd_realsense_D435i
@@ -389,4 +449,13 @@ if(realsense2_FOUND)
     add_executable(stereo_inertial_realsense_D435i_old
             Examples_old/Stereo-Inertial/stereo_inertial_realsense_D435i.cc)
     target_link_libraries(stereo_inertial_realsense_D435i_old ${PROJECT_NAME})
+endif()
+
+
+
+set(BUILD_TESTS OFF CACHE BOOL "Build tests")
+
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(test)
 endif()

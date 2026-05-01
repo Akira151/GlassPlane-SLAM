@@ -28,7 +28,7 @@
 #include <mutex>
 
 #include <boost/serialization/base_object.hpp>
-
+#include "landmark_plane.h"
 
 namespace ORB_SLAM3
 {
@@ -84,6 +84,21 @@ public:
     std::vector<KeyFrame*> GetAllKeyFrames();
     std::vector<MapPoint*> GetAllMapPoints();
     std::vector<MapPoint*> GetReferenceMapPoints();
+
+
+
+    // FW:
+    std::unordered_map<unsigned int, Plane *> _landmarks_plane; //平面的字典，按照平面的编号分。
+    //-----------------------------------------
+    // FW: some functionalities for plane
+    bool _b_seg_or_not = false;                                                              // global flag which indicates semantic SLAM is running
+    void add_landmark_plane(Plane *pl);                                                      // add plane to unordered_map
+    std::vector<Plane *> get_all_landmark_planes() const;                                    // return a vector, not unordered_map
+    std::unordered_map<unsigned int, Plane *> get_all_landmark_planes_unordered_map() const; // return unordered_map
+    void erase_landmark_plane(Plane *pl);                                                    // erase a plane from unordered_map
+    void erase_landmark_plane(unsigned id);                                                  // erase a plane from unordered_map, according to id
+    unsigned int get_num_landmark_planes() const;                                            // return the number of planes
+
 
     long unsigned int MapPointsInMap();
     long unsigned  KeyFramesInMap();
@@ -199,7 +214,7 @@ protected:
     bool mbIMU_BA2;
 
     // Mutex
-    std::mutex mMutexMap;
+    mutable std::mutex mMutexMap;
 
 };
 

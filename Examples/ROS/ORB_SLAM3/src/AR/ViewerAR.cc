@@ -103,7 +103,7 @@ void ViewerAR::Run()
 
     pangolin::OpenGlMatrixSpec P = pangolin::ProjectionMatrixRDF_TopLeft(w,h,fx,fy,cx,cy,0.001,1000);
 
-    vector<Plane*> vpPlane;
+    vector<PlaneAR*> vpPlane;
 
     while(1)
     {
@@ -167,7 +167,7 @@ void ViewerAR::Run()
             }
             if(menu_detectplane)
             {
-                Plane* pPlane = DetectPlane(Tcw,vMPs,50);
+                PlaneAR* pPlane = DetectPlane(Tcw,vMPs,50);
                 if(pPlane)
                 {
                     cout << "New virtual cube inserted!" << endl;
@@ -196,7 +196,7 @@ void ViewerAR::Run()
 
                 for(size_t i=0; i<vpPlane.size(); i++)
                 {
-                    Plane* pPlane = vpPlane[i];
+                    PlaneAR* pPlane = vpPlane[i];
 
                     if(pPlane)
                     {
@@ -340,7 +340,7 @@ void ViewerAR::DrawCube(const float &size,const float x, const float y, const fl
     glPopMatrix();
 }
 
-void ViewerAR::DrawPlane(Plane *pPlane, int ndivs, float ndivsize)
+void ViewerAR::DrawPlane(PlaneAR *pPlane, int ndivs, float ndivsize)
 {
     glPushMatrix();
     pPlane->glTpw.Multiply();
@@ -350,7 +350,7 @@ void ViewerAR::DrawPlane(Plane *pPlane, int ndivs, float ndivsize)
 
 void ViewerAR::DrawPlane(int ndivs, float ndivsize)
 {
-    // Plane parallel to x-z at origin with normal -y
+    // PlaneAR parallel to x-z at origin with normal -y
     const float minx = -ndivs*ndivsize;
     const float minz = -ndivs*ndivsize;
     const float maxx = ndivs*ndivsize;
@@ -387,7 +387,7 @@ void ViewerAR::DrawTrackedPoints(const std::vector<cv::KeyPoint> &vKeys, const s
     }
 }
 
-Plane* ViewerAR::DetectPlane(const cv::Mat Tcw, const std::vector<MapPoint*> &vMPs, const int iterations)
+PlaneAR* ViewerAR::DetectPlane(const cv::Mat Tcw, const std::vector<MapPoint*> &vMPs, const int iterations)
 {
     // Retrieve 3D points
     vector<cv::Mat> vPoints;
@@ -502,16 +502,16 @@ Plane* ViewerAR::DetectPlane(const cv::Mat Tcw, const std::vector<MapPoint*> &vM
         }
     }
 
-    return new Plane(vInlierMPs,Tcw);
+    return new PlaneAR(vInlierMPs,Tcw);
 }
 
-Plane::Plane(const std::vector<MapPoint *> &vMPs, const cv::Mat &Tcw):mvMPs(vMPs),mTcw(Tcw.clone())
+PlaneAR::PlaneAR(const std::vector<MapPoint *> &vMPs, const cv::Mat &Tcw):mvMPs(vMPs),mTcw(Tcw.clone())
 {
     rang = -3.14f/2+((float)rand()/RAND_MAX)*3.14f;
     Recompute();
 }
 
-void Plane::Recompute()
+void PlaneAR::Recompute()
 {
     const int N = mvMPs.size();
 
@@ -599,7 +599,7 @@ void Plane::Recompute()
 
 }
 
-Plane::Plane(const float &nx, const float &ny, const float &nz, const float &ox, const float &oy, const float &oz)
+PlaneAR::PlaneAR(const float &nx, const float &ny, const float &nz, const float &ox, const float &oy, const float &oz)
 {
     n = (cv::Mat_<float>(3,1)<<nx,ny,nz);
     o = (cv::Mat_<float>(3,1)<<ox,oy,oz);

@@ -19,7 +19,7 @@
 
 #include "Viewer.h"
 #include <pangolin/pangolin.h>
-
+#include "landmark_plane.h"
 #include <mutex>
 
 namespace ORB_SLAM3
@@ -181,14 +181,15 @@ void Viewer::Run()
     pangolin::Var<bool> menuShowPoints("menu.Show Points",true,true);
     pangolin::Var<bool> menuShowKeyFrames("menu.Show KeyFrames",true,true);
     pangolin::Var<bool> menuShowGraph("menu.Show Graph",false,true);
-    pangolin::Var<bool> menuShowInertialGraph("menu.Show Inertial Graph",true,true);
+    pangolin::Var<bool> menuShowInertialGraph("menu.Show Inertial Graph",false,true);
     pangolin::Var<bool> menuLocalizationMode("menu.Localization Mode",false,true);
     pangolin::Var<bool> menuReset("menu.Reset",false,false);
+    pangolin::Var<bool> menuSaveTrajectoryTUM("menu.Save TUM Traj",false,false);
     pangolin::Var<bool> menuStop("menu.Stop",false,false);
     pangolin::Var<bool> menuStepByStep("menu.Step By Step",false,true);  // false, true
     pangolin::Var<bool> menuStep("menu.Step",false,false);
 
-    pangolin::Var<bool> menuShowOptLba("menu.Show LBA opt", false, true);
+    pangolin::Var<bool> menuShowOptLba("menu.Show LBA opt", true, true);
     // Define Camera Render Object (for view / scene browsing)
     pangolin::OpenGlRenderState s_cam(
                 pangolin::ProjectionMatrix(1024,768,mViewpointF,mViewpointF,512,389,0.1,1000),
@@ -205,6 +206,13 @@ void Viewer::Run()
     pangolin::OpenGlMatrix Ow; // Oriented with g in the z axis
     Ow.SetIdentity();
     cv::namedWindow("ORB-SLAM3: Current Frame");
+    cv::namedWindow("ORB-SLAM3: Depth Vis");
+    cv::namedWindow("ORB-SLAM3: Mask");
+    cv::namedWindow("ORB-SLAM3: Depth fitted");
+    cv::moveWindow("ORB-SLAM3: Current Frame", 100, 100);
+    cv::moveWindow("ORB-SLAM3: Depth Vis", 100, 650);
+    cv::moveWindow("ORB-SLAM3: Mask", 800, 100);
+    cv::moveWindow("ORB-SLAM3: Depth fitted", 800, 650);
 
     bool bFollow = true;
     bool bLocalizationMode = false;
@@ -315,6 +323,8 @@ void Viewer::Run()
         if(menuShowPoints)
             mpMapDrawer->DrawMapPoints();
 
+        mpMapDrawer->DrawPlaneLandmarks();
+
         pangolin::FinishFrame();
 
         cv::Mat toShow;
@@ -335,7 +345,21 @@ void Viewer::Run()
             cv::resize(toShow, toShow, cv::Size(width, height));
         }
 
+        cv::Mat depthvis=mpFrameDrawer->DrawDepthVis();
+        cv::Mat mask=mpFrameDrawer->GetMask();
+        cv::Mat imDepthGSVis = mpFrameDrawer->DrawDepthGSVis();
+
+
         cv::imshow("ORB-SLAM3: Current Frame",toShow);
+        if(!depthvis.empty()){
+            cv::imshow("ORB-SLAM3: Depth Vis",depthvis);
+        }
+        if(!mask.empty()){
+            cv::imshow("ORB-SLAM3: Mask",mask);
+        }
+        if(!imDepthGSVis.empty()){
+            cv::imshow("ORB-SLAM3: Depth fitted",imDepthGSVis);
+        }
         cv::waitKey(mT);
 
         if(menuReset)
@@ -352,6 +376,13 @@ void Viewer::Run()
             menuFollowCamera = true;
             mpSystem->ResetActiveMap();
             menuReset = false;
+        }
+
+        if(menuSaveTrajectoryTUM)
+        {
+            mpSystem->SaveTrajectoryTUM("CameraTrajectory.txt");
+            mpSystem->SaveKeyFrameTrajectoryTUM("KeyFrameTrajectory.txt");
+            menuSaveTrajectoryTUM = false;
         }
 
         if(menuStop)
@@ -448,5 +479,6 @@ void Viewer::Release()
 {
     mbStopTrack = true;
 }*/
+
 
 }
