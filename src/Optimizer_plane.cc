@@ -35,7 +35,13 @@
 #include "Converter.h"
 #include "landmark_plane.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <limits>
 #include <mutex>
+#include <string>
 
 #include "OptimizableTypes.h"
 #include "OptimizableTypes_plane.h"
@@ -52,6 +58,321 @@ bool IsValidPlaneCoeffs(const Eigen::Vector4d &coeffs)
 bool IsFiniteChi2(double chi2)
 {
     return std::isfinite(chi2);
+}
+
+bool PlaneBaDebugEnabled()
+{
+    static const bool enabled = []() {
+        const char *env = std::getenv("ORB_SLAM3_PLANE_BA_DEBUG");
+        if (!env)
+            return false;
+        const std::string value(env);
+        return value != "0" && value != "false" && value != "FALSE";
+    }();
+    return enabled;
+}
+
+int PlaneBaDebugEvery()
+{
+    static const int every = []() {
+        const char *env = std::getenv("ORB_SLAM3_PLANE_BA_DEBUG_EVERY");
+        if (!env)
+            return 1;
+        const int value = std::atoi(env);
+        return value > 0 ? value : 1;
+    }();
+    return every;
+}
+
+bool ShouldPrintPlaneBaDebug(const unsigned long kfId, const size_t nPlaneEdges)
+{
+    return PlaneBaDebugEnabled() && nPlaneEdges > 0 && (kfId % PlaneBaDebugEvery() == 0);
+}
+
+double ReadPositiveEnvDouble(const char *name)
+{
+    const char *env = std::getenv(name);
+    if (!env)
+        return -1.0;
+    const double value = std::atof(env);
+    return value > 0.0 ? value : -1.0;
+}
+
+double PlaneInfoWeightOverride()
+{
+    static const double weight = ReadPositiveEnvDouble("ORB_SLAM3_PLANE_INFO_WEIGHT");
+    return weight;
+}
+
+double ComputePlaneInfoWeight(const size_t nPointEdges, const size_t nPlaneEdges)
+{
+    const double overrideWeight = PlaneInfoWeightOverride();
+    if (overrideWeight > 0.0)
+        return overrideWeight;
+
+    if (nPointEdges == 0 || nPlaneEdges == 0)
+        return 1.0;
+
+    const double edgeRatio = static_cast<double>(nPointEdges) / static_cast<double>(nPlaneEdges);
+    const double weight = 50.0 * edgeRatio;
+    return std::min(20000.0, std::max(100.0, weight));
+}
+
+void ConfigurePlaneEdges(std::vector<ORB_SLAM3::reproj_edge_plane3d *> &edges,
+                         const double planeInfoWeight,
+                         const double huberDelta)
+{
+    const double safeWeight = planeInfoWeight > 0.0 ? planeInfoWeight : 1.0;
+    const Eigen::Matrix3d planeInformation = Eigen::Matrix3d::Identity() * safeWeight;
+    const double weightedHuberDelta = huberDelta * std::sqrt(safeWeight);
+
+    for (ORB_SLAM3::reproj_edge_plane3d *edge : edges)
+    {
+        if (!edge)
+            continue;
+        edge->setInformation(planeInformation);
+        if (edge->robustKernel())
+            edge->robustKernel()->setDelta(weightedHuberDelta);
+    }
+}
+
+double RawPlaneChi2(const ORB_SLAM3::reproj_edge_plane3d *edge)
+{
+    if (!edge)
+        return std::numeric_limits<double>::infinity();
+    const double rawChi2 = edge->error().squaredNorm();
+    return std::isfinite(rawChi2) ? rawChi2 : std::numeric_limits<double>::infinity();
+}
+
+struct EdgeContributionStats
+{
+    size_t count = 0;
+    size_t finite = 0;
+    size_t outliers = 0;
+    size_t badDepth = 0;
+    double chi2 = 0.0;
+    double robustChi2 = 0.0;
+    double rawError2 = 0.0;
+    double infoTrace = 0.0;
+    double poseHessianTrace = 0.0;
+    double maxChi2 = 0.0;
+};
+
+void AddStats(EdgeContributionStats &dst, const EdgeContributionStats &src)
+{
+    dst.count += src.count;
+    dst.finite += src.finite;
+    dst.outliers += src.outliers;
+    dst.badDepth += src.badDepth;
+    dst.chi2 += src.chi2;
+    dst.robustChi2 += src.robustChi2;
+    dst.rawError2 += src.rawError2;
+    dst.infoTrace += src.infoTrace;
+    dst.poseHessianTrace += src.poseHessianTrace;
+    dst.maxChi2 = std::max(dst.maxChi2, src.maxChi2);
+}
+
+template <typename EdgeT>
+bool IsDepthPositiveForStats(EdgeT *)
+{
+    return true;
+}
+
+bool IsDepthPositiveForStats(ORB_SLAM3::EdgeSE3ProjectXYZ *edge)
+{
+    return edge->isDepthPositive();
+}
+
+bool IsDepthPositiveForStats(ORB_SLAM3::EdgeSE3ProjectXYZToBody *edge)
+{
+    return edge->isDepthPositive();
+}
+
+bool IsDepthPositiveForStats(g2o::EdgeStereoSE3ProjectXYZ *edge)
+{
+    return edge->isDepthPositive();
+}
+
+template <typename EdgeT>
+double RobustChi2ForStats(const EdgeT *edge, const double chi2)
+{
+    if (!std::isfinite(chi2))
+        return 0.0;
+    if (!edge->robustKernel())
+        return chi2;
+
+    Eigen::Vector3d rho;
+    edge->robustKernel()->robustify(chi2, rho);
+    return std::isfinite(rho[0]) ? rho[0] : 0.0;
+}
+
+template <typename EdgeT>
+double RobustScaleForStats(const EdgeT *edge, const double chi2)
+{
+    if (!std::isfinite(chi2) || !edge->robustKernel())
+        return 1.0;
+
+    Eigen::Vector3d rho;
+    edge->robustKernel()->robustify(chi2, rho);
+    return std::isfinite(rho[1]) ? rho[1] : 1.0;
+}
+
+template <typename EdgeT>
+double EstimatePoseHessianTrace(EdgeT *edge, const int poseVertexIndex)
+{
+    if (!edge || poseVertexIndex < 0 || poseVertexIndex >= static_cast<int>(edge->vertices().size()))
+        return 0.0;
+
+    g2o::OptimizableGraph::Vertex *poseVertex =
+        dynamic_cast<g2o::OptimizableGraph::Vertex *>(edge->vertex(poseVertexIndex));
+    if (!poseVertex || poseVertex->fixed() || poseVertex->dimension() != 6)
+        return 0.0;
+
+    const int errorDim = edge->dimension();
+    const int poseDim = poseVertex->dimension();
+    const double delta = 1e-6;
+    Eigen::MatrixXd jacobian(errorDim, poseDim);
+    std::vector<double> update(poseDim, 0.0);
+
+    for (int d = 0; d < poseDim; ++d)
+    {
+        poseVertex->push();
+        update[d] = delta;
+        poseVertex->oplus(update.data());
+        edge->computeError();
+        const Eigen::Map<const Eigen::VectorXd> errorPlus(edge->errorData(), errorDim);
+        const Eigen::VectorXd plus = errorPlus;
+        poseVertex->pop();
+
+        poseVertex->push();
+        update[d] = -delta;
+        poseVertex->oplus(update.data());
+        edge->computeError();
+        const Eigen::Map<const Eigen::VectorXd> errorMinus(edge->errorData(), errorDim);
+        const Eigen::VectorXd minus = errorMinus;
+        poseVertex->pop();
+
+        jacobian.col(d) = (plus - minus) / (2.0 * delta);
+        update[d] = 0.0;
+    }
+
+    edge->computeError();
+    if (!jacobian.allFinite())
+        return 0.0;
+
+    const Eigen::Map<const Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>> info(
+        edge->informationData(), errorDim, errorDim);
+    const double robustScale = RobustScaleForStats(edge, edge->chi2());
+    const double trace = (jacobian.transpose() * (robustScale * info) * jacobian).trace();
+    return std::isfinite(trace) ? trace : 0.0;
+}
+
+template <typename EdgeT>
+EdgeContributionStats CollectEdgeStats(const std::vector<EdgeT *> &edges, const double chi2Threshold, const int poseVertexIndex)
+{
+    EdgeContributionStats stats;
+    for (EdgeT *edge : edges)
+    {
+        if (!edge)
+            continue;
+
+        ++stats.count;
+        edge->computeError();
+
+        const double chi2 = edge->chi2();
+        const double rawError2 = edge->error().squaredNorm();
+        const bool finite = std::isfinite(chi2) && std::isfinite(rawError2);
+        const bool depthPositive = IsDepthPositiveForStats(edge);
+
+        if (!depthPositive)
+            ++stats.badDepth;
+        if (!finite || chi2 > chi2Threshold || !depthPositive)
+            ++stats.outliers;
+
+        if (!finite)
+            continue;
+
+        ++stats.finite;
+        stats.chi2 += chi2;
+        stats.robustChi2 += RobustChi2ForStats(edge, chi2);
+        stats.rawError2 += rawError2;
+        stats.infoTrace += edge->information().trace();
+        stats.poseHessianTrace += EstimatePoseHessianTrace(edge, poseVertexIndex);
+        stats.maxChi2 = std::max(stats.maxChi2, chi2);
+    }
+    return stats;
+}
+
+double SafeRatio(const double numerator, const double denominator)
+{
+    return denominator > 0.0 ? numerator / denominator : 0.0;
+}
+
+void PrintGroupStats(const char *label, const EdgeContributionStats &stats, const double totalRobustChi2, const double totalPoseHessianTrace)
+{
+    const double denom = static_cast<double>(std::max<size_t>(stats.finite, 1));
+    std::cout << " " << label
+              << " edges=" << stats.count
+              << " finite=" << stats.finite
+              << " out=" << stats.outliers
+              << " badDepth=" << stats.badDepth
+              << " chi2=" << stats.chi2
+              << " robust=" << stats.robustChi2
+              << " robustPct=" << SafeRatio(stats.robustChi2, totalRobustChi2)
+              << " meanChi2=" << stats.chi2 / denom
+              << " meanRawNorm=" << std::sqrt(stats.rawError2 / denom)
+              << " meanInfoTrace=" << stats.infoTrace / denom
+              << " poseHTrace=" << stats.poseHessianTrace
+              << " poseHTracePct=" << SafeRatio(stats.poseHessianTrace, totalPoseHessianTrace)
+              << " maxChi2=" << stats.maxChi2 <<endl;
+}
+
+void PrintLbaDiagnostics(const char *stage,
+                         const unsigned long kfId,
+                         const size_t nLocalKFs,
+                         const size_t nFixedKFs,
+                         const size_t nLocalMapPoints,
+                         const size_t nLocalPlanes,
+                         const double planeInfoWeight,
+                         const EdgeContributionStats &monoStats,
+                         const EdgeContributionStats &bodyStats,
+                         const EdgeContributionStats &stereoStats,
+                         const EdgeContributionStats &planeStats)
+{
+    EdgeContributionStats pointStats;
+    AddStats(pointStats, monoStats);
+    AddStats(pointStats, bodyStats);
+    AddStats(pointStats, stereoStats);
+
+    const double totalRobustChi2 = pointStats.robustChi2 + planeStats.robustChi2;
+    const double totalPoseHessianTrace = pointStats.poseHessianTrace + planeStats.poseHessianTrace;
+
+    std::streamsize oldPrecision = std::cout.precision();
+    std::ios::fmtflags oldFlags = std::cout.flags();
+    std::cout << std::fixed << std::setprecision(6);
+
+    std::cout << "[LBA-DBG][plane][" << stage << "]"
+              << " KF=" << kfId
+              << " optKF=" << nLocalKFs
+              << " fixedKF=" << nFixedKFs
+              << " localMP=" << nLocalMapPoints
+              << " localPlane=" << nLocalPlanes
+              << " planeInfoWeight=" << planeInfoWeight
+              << std::endl;
+
+    std::cout << "[LBA-DBG][plane][" << stage << "]";
+    PrintGroupStats("point", pointStats, totalRobustChi2, totalPoseHessianTrace);
+    PrintGroupStats("plane", planeStats, totalRobustChi2, totalPoseHessianTrace);
+    std::cout << std::endl;
+
+    std::cout << "[LBA-DBG][plane][" << stage << "]";
+    PrintGroupStats("mono", monoStats, totalRobustChi2, totalPoseHessianTrace);
+    PrintGroupStats("body", bodyStats, totalRobustChi2, totalPoseHessianTrace);
+    PrintGroupStats("stereo", stereoStats, totalRobustChi2, totalPoseHessianTrace);
+    std::cout << std::endl;
+
+    std::cout.precision(oldPrecision);
+    std::cout.flags(oldFlags);
 }
 
 } // namespace
@@ -562,8 +883,8 @@ void Optimizer_plane::LocalBundleAdjustment_plane(KeyFrame *pKF, bool *pbStopFla
                     e->setMeasurement(obs);
                     // const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave];
                     // e->setInformation(Eigen::Matrix2d::Identity() * invSigma2);
-                    // 暂时将信息矩阵设置成1
-                    e->setInformation(Eigen::Matrix3d::Identity()*100);
+                    // Keep construction and initial gating in the unweighted residual scale.
+                    e->setInformation(Eigen::Matrix3d::Identity());
 
                     g2o::RobustKernelHuber *rk = new g2o::RobustKernelHuber;
                     e->setRobustKernel(rk);
@@ -573,7 +894,7 @@ void Optimizer_plane::LocalBundleAdjustment_plane(KeyFrame *pKF, bool *pbStopFla
                     // e->pCamera = pKFi->mpCamera;
 
                     e->computeError();
-                    const double initChi2 = e->chi2();
+                    const double initChi2 = RawPlaneChi2(e);
                     if (!IsFiniteChi2(initChi2) || initChi2 > chi2PlaneInit)
                     {
                         delete e;
@@ -593,6 +914,10 @@ void Optimizer_plane::LocalBundleAdjustment_plane(KeyFrame *pKF, bool *pbStopFla
     }
     num_edges = nEdges;
 
+    const size_t nPointEdges = vpEdgesMono.size() + vpEdgesBody.size() + vpEdgesStereo.size();
+    const double planeInfoWeight = ComputePlaneInfoWeight(nPointEdges, vpEdgesPlane.size());
+    ConfigurePlaneEdges(vpEdgesPlane, planeInfoWeight, thHuberPlane);
+
     if (pbStopFlag)
         if (*pbStopFlag)
             return;
@@ -600,9 +925,56 @@ void Optimizer_plane::LocalBundleAdjustment_plane(KeyFrame *pKF, bool *pbStopFla
     if (nEdges == 0)
         return;
 
+    const bool bPrintPlaneBaDebug = ShouldPrintPlaneBaDebug(pKF->mnId, vpEdgesPlane.size());
+    if (bPrintPlaneBaDebug)
+    {
+        const EdgeContributionStats monoStats =
+            CollectEdgeStats(vpEdgesMono, 5.991, 1);
+        const EdgeContributionStats bodyStats =
+            CollectEdgeStats(vpEdgesBody, 5.991, 1);
+        const EdgeContributionStats stereoStats =
+            CollectEdgeStats(vpEdgesStereo, 7.815, 1);
+        const EdgeContributionStats planeStats =
+            CollectEdgeStats(vpEdgesPlane, chi2Plane * planeInfoWeight, 0);
+        PrintLbaDiagnostics("pre",
+                            pKF->mnId,
+                            lLocalKeyFrames.size(),
+                            lFixedCameras.size(),
+                            lLocalMapPoints.size(),
+                            lLocalPlaneLandmarks.size(),
+                            planeInfoWeight,
+                            monoStats,
+                            bodyStats,
+                            stereoStats,
+                            planeStats);
+    }
+
     // 步骤9：开始优化
     optimizer.initializeOptimization();
     optimizer.optimize(10);
+
+    if (bPrintPlaneBaDebug)
+    {
+        const EdgeContributionStats monoStats =
+            CollectEdgeStats(vpEdgesMono, 5.991, 1);
+        const EdgeContributionStats bodyStats =
+            CollectEdgeStats(vpEdgesBody, 5.991, 1);
+        const EdgeContributionStats stereoStats =
+            CollectEdgeStats(vpEdgesStereo, 7.815, 1);
+        const EdgeContributionStats planeStats =
+            CollectEdgeStats(vpEdgesPlane, chi2Plane * planeInfoWeight, 0);
+        PrintLbaDiagnostics("post",
+                            pKF->mnId,
+                            lLocalKeyFrames.size(),
+                            lFixedCameras.size(),
+                            lLocalMapPoints.size(),
+                            lLocalPlaneLandmarks.size(),
+                            planeInfoWeight,
+                            monoStats,
+                            bodyStats,
+                            stereoStats,
+                            planeStats);
+    }
 
     vector<pair<KeyFrame *, MapPoint *>> vToErase;
     vToErase.reserve(vpEdgesMono.size() + vpEdgesBody.size() + vpEdgesStereo.size());
@@ -664,7 +1036,8 @@ void Optimizer_plane::LocalBundleAdjustment_plane(KeyFrame *pKF, bool *pbStopFla
         if (!pPlane || !pPlane->is_valid())
             continue;
 
-        const double chi2 = e->chi2();
+        e->computeError();
+        const double chi2 = RawPlaneChi2(e);
         if (!IsFiniteChi2(chi2) || chi2 > chi2Plane)
         {
             KeyFrame *pKFi = vpEdgeKFPlane[i];

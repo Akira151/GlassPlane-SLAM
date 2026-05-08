@@ -160,13 +160,13 @@ ImuCamPose::ImuCamPose(Eigen::Matrix3d &_Rwc, Eigen::Vector3d &_twc, KeyFrame* p
  * @brief 设置相关数据
  */
 void ImuCamPose::SetParam(
-    const std::vector<Eigen::Matrix3d> &_Rcw, const std::vector<Eigen::Vector3d> &_tcw,
-    const std::vector<Eigen::Matrix3d> &_Rbc, const std::vector<Eigen::Vector3d> &_tbc, const double &_bf)
+    const AlignedMatrix3dVector &_Rcw, const AlignedVector3dVector &_tcw,
+    const AlignedMatrix3dVector &_Rbc, const AlignedVector3dVector &_tbc, const double &_bf)
 {
-    Rbc = _Rbc;
-    tbc = _tbc;
-    Rcw = _Rcw;
-    tcw = _tcw;
+    Rbc.assign(_Rbc.begin(), _Rbc.end());
+    tbc.assign(_tbc.begin(), _tbc.end());
+    Rcw.assign(_Rcw.begin(), _Rcw.end());
+    tcw.assign(_tcw.begin(), _tcw.end());
     const int num_cams = Rbc.size();
     Rcb.resize(num_cams);
     tcb.resize(num_cams);
@@ -305,10 +305,10 @@ void InvDepthPoint::Update(const double *pu)
  */
 bool VertexPose::read(std::istream& is)
 {
-    std::vector<Eigen::Matrix<double,3,3> > Rcw;
-    std::vector<Eigen::Matrix<double,3,1> > tcw;
-    std::vector<Eigen::Matrix<double,3,3> > Rbc;
-    std::vector<Eigen::Matrix<double,3,1> > tbc;
+    ImuCamPose::AlignedMatrix3dVector Rcw;
+    ImuCamPose::AlignedVector3dVector tcw;
+    ImuCamPose::AlignedMatrix3dVector Rbc;
+    ImuCamPose::AlignedVector3dVector tbc;
 
     const int num_cams = _estimate.Rbc.size();
     for(int idx = 0; idx<num_cams; idx++)
@@ -349,11 +349,11 @@ bool VertexPose::read(std::istream& is)
  */
 bool VertexPose::write(std::ostream& os) const
 {
-    std::vector<Eigen::Matrix<double,3,3> > Rcw = _estimate.Rcw;
-    std::vector<Eigen::Matrix<double,3,1> > tcw = _estimate.tcw;
+    ImuCamPose::AlignedMatrix3dVector Rcw = _estimate.Rcw;
+    ImuCamPose::AlignedVector3dVector tcw = _estimate.tcw;
 
-    std::vector<Eigen::Matrix<double,3,3> > Rbc = _estimate.Rbc;
-    std::vector<Eigen::Matrix<double,3,1> > tbc = _estimate.tbc;
+    ImuCamPose::AlignedMatrix3dVector Rbc = _estimate.Rbc;
+    ImuCamPose::AlignedVector3dVector tbc = _estimate.tbc;
 
     const int num_cams = tcw.size();
 

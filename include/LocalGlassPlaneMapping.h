@@ -52,9 +52,12 @@ public:
 private:
     struct PlaneCandidateState
     {
+        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
         // 平面参数
         Eigen::Vector3d normal = Eigen::Vector3d::Zero();
         double offset = 0.0;
+        Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
+        bool has_centroid = false;
         // 连续关键帧计数
         int consecutive = 0;
         // 用来判断是否连续
@@ -65,20 +68,23 @@ private:
     // 清空全部候选
     void ResetPlaneCandidate();
     // 新建一个候选
-    void StartPlaneCandidate(const Eigen::Vector3d& n_w, double d_w, KeyFrame* keyfrm, unsigned int keypln_idx);
+    void StartPlaneCandidate(const Eigen::Vector3d& n_w, double d_w, const Eigen::Vector3d& centroid_w,
+                             bool has_centroid_w, KeyFrame* keyfrm, unsigned int keypln_idx);
     // 判断是否是同一个平面，基于角度和距离
     
     // 删除过期的候选。即不连续的候选
     void PruneStalePlaneCandidates(long unsigned int current_kf_id);
 
-    bool checkPlaneMatch(const Eigen::Vector3d& ncurrent, double dcurrent, const PlaneCandidateState& candidate) const;
-    bool checkPlaneMatch(const Vec3_t &ncurrent, const double dcurrent, const Plane* plane_lm);
+    bool checkPlaneMatch(const Eigen::Vector3d& ncurrent, double dcurrent, const Eigen::Vector3d& centroid_current,
+                         bool has_centroid_current, const PlaneCandidateState& candidate) const;
+    bool checkPlaneMatch(const Vec3_t &ncurrent, const double dcurrent, const Eigen::Vector3d& centroid_current,
+                         bool has_centroid_current, const Plane* plane_lm);
     bool checkPlaneMatch(const keyplane* pln1, const keyplane* pln2);
     
 
     void AttachNearbyMapPoints(Plane* plane, KeyFrame* keyfrm);
 
-    std::vector<PlaneCandidateState> mPlaneCandidates;
+    std::vector<PlaneCandidateState, Eigen::aligned_allocator<PlaneCandidateState>> mPlaneCandidates;
     GlassPlaneMappingConfig mConfig;
 };
 

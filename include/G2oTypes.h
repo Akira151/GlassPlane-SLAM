@@ -30,6 +30,7 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <Eigen/Dense>
+#include <Eigen/StdVector>
 
 #include <Frame.h>
 #include <KeyFrame.h>
@@ -76,13 +77,16 @@ class ImuCamPose
 {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    typedef std::vector<Eigen::Matrix3d, Eigen::aligned_allocator<Eigen::Matrix3d>> AlignedMatrix3dVector;
+    typedef std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d>> AlignedVector3dVector;
+
     ImuCamPose() {}
     ImuCamPose(KeyFrame *pKF);
     ImuCamPose(Frame *pF);
     ImuCamPose(Eigen::Matrix3d &_Rwc, Eigen::Vector3d &_twc, KeyFrame *pKF);
 
-    void SetParam(const std::vector<Eigen::Matrix3d> &_Rcw, const std::vector<Eigen::Vector3d> &_tcw, const std::vector<Eigen::Matrix3d> &_Rbc,
-                    const std::vector<Eigen::Vector3d> &_tbc, const double &_bf);
+    void SetParam(const AlignedMatrix3dVector &_Rcw, const AlignedVector3dVector &_tcw, const AlignedMatrix3dVector &_Rbc,
+                    const AlignedVector3dVector &_tbc, const double &_bf);
 
     void Update(const double *pu);                                                   // update in the imu reference
     void UpdateW(const double *pu);                                                  // update in the world reference
@@ -96,10 +100,10 @@ public:
     Eigen::Vector3d twb;
 
     // For set of cameras
-    std::vector<Eigen::Matrix3d> Rcw;
-    std::vector<Eigen::Vector3d> tcw;
-    std::vector<Eigen::Matrix3d> Rcb, Rbc;
-    std::vector<Eigen::Vector3d> tcb, tbc;
+    AlignedMatrix3dVector Rcw;
+    AlignedVector3dVector tcw;
+    AlignedMatrix3dVector Rcb, Rbc;
+    AlignedVector3dVector tcb, tbc;
     double bf;
     std::vector<GeometricCamera *> pCamera;
 

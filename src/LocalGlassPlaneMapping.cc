@@ -75,7 +75,6 @@ namespace ORB_SLAM3
     bool compute_cloud_centroid(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr& cloud, Vec3_t& centroid);
 
 
-    bool checkPlaneMatch(const Vec3_t &ncurrent, const double dcurrent, const Plane* plane_lm);
     Vec3_t coortrans_pix2cam(int y, int x, float depth, Eigen::Matrix3f K);
 
     float read_depth_in_meters(const cv::Mat& depth_img, int y, int x)
@@ -136,6 +135,40 @@ namespace ORB_SLAM3
         return centroid.allFinite();
     }
 
+    bool has_valid_centroid(const Vec3_t& centroid)
+    {
+        return centroid.allFinite() && centroid.squaredNorm() > 1e-8;
+    }
+
+    double point_plane_distance(const Vec3_t& normal, const double offset, const Vec3_t& point)
+    {
+        const double normal_norm = normal.norm();
+        if (!normal.allFinite() || !point.allFinite() || !std::isfinite(offset) || normal_norm <= 1e-12)
+        {
+            return std::numeric_limits<double>::infinity();
+        }
+        return std::abs(normal.dot(point) + offset) / normal_norm;
+    }
+
+    bool align_plane_for_match(const Vec3_t& reference_normal,
+                               Vec3_t& normal_to_align,
+                               double& offset_to_align,
+                               const double min_normal_dot)
+    {
+        const double normal_dot = reference_normal.dot(normal_to_align);
+        if (std::abs(normal_dot) <= min_normal_dot)
+        {
+            return false;
+        }
+
+        if (normal_dot < 0.0)
+        {
+            normal_to_align = -normal_to_align;
+            offset_to_align = -offset_to_align;
+        }
+        return true;
+    }
+
     LocalGlassPlaneMapping::LocalGlassPlaneMapping(System* pSys, Atlas *pAtlas, const float bMonocular,
                                                    PointCloudMapping* pPointCloudMapping, const GlassPlaneMappingConfig& config)
     :mpAtlas(pAtlas), mbMonocular(bMonocular), mpSys(pSys), mpPointCloudMapping(pPointCloudMapping), mConfig(config)
@@ -148,11 +181,14 @@ namespace ORB_SLAM3
         mPlaneCandidates.clear();
     }
 
-    void LocalGlassPlaneMapping::StartPlaneCandidate(const Eigen::Vector3d& n_w, double d_w, KeyFrame* keyfrm, unsigned int keypln_idx)
+    void LocalGlassPlaneMapping::StartPlaneCandidate(const Eigen::Vector3d& n_w, double d_w, const Eigen::Vector3d& centroid_w,
+                                                     bool has_centroid_w, KeyFrame* keyfrm, unsigned int keypln_idx)
     {
         PlaneCandidateState candidate;
         candidate.normal = n_w;
         candidate.offset = d_w;
+        candidate.centroid = centroid_w;
+        candidate.has_centroid = has_centroid_w && has_valid_centroid(centroid_w);
         candidate.consecutive = 1;
         candidate.last_kf_id = keyfrm ? keyfrm->mnId : 0;
         if (keyfrm)
@@ -178,21 +214,70 @@ namespace ORB_SLAM3
     }
 
 
-    bool LocalGlassPlaneMapping::checkPlaneMatch(const Eigen::Vector3d& ncurrent, double dcurrent, const PlaneCandidateState& candidate) const
+    bool LocalGlassPlaneMapping::checkPlaneMatch(const Eigen::Vector3d& ncurrent, double dcurrent, const Eigen::Vector3d& centroid_current,
+                                                bool has_centroid_current, const PlaneCandidateState& candidate) const
     {
         Eigen::Vector3d ncandidate=candidate.normal;
         double dcandidate=candidate.offset;
 
-        if (ncurrent.dot(ncandidate) > mConfig.plane_match_thr_ang && std::abs(dcurrent - dcandidate) < mConfig.plane_match_thr_d) return true;
-        else return false;
+        if (!align_plane_for_match(ncurrent, ncandidate, dcandidate, mConfig.plane_match_thr_ang))
+        {
+            return false;
+        }
+
+        const bool current_centroid_valid = has_centroid_current && has_valid_centroid(centroid_current);
+        if (current_centroid_valid)
+        {
+            const double dist_current_to_candidate = point_plane_distance(ncandidate, dcandidate, centroid_current);
+            if (dist_current_to_candidate >= mConfig.plane_match_thr_d)
+            {
+                return false;
+            }
+
+            if (candidate.has_centroid && has_valid_centroid(candidate.centroid))
+            {
+                const double dist_candidate_to_current = point_plane_distance(ncurrent, dcurrent, candidate.centroid);
+                return dist_candidate_to_current < mConfig.plane_match_thr_d;
+            }
+            return true;
+        }
+
+        return std::abs(dcurrent - dcandidate) < mConfig.plane_match_thr_d;
     }
 
-    bool LocalGlassPlaneMapping::checkPlaneMatch(const Vec3_t &ncurrent, const double dcurrent, const Plane* plane_lm){
+    bool LocalGlassPlaneMapping::checkPlaneMatch(const Vec3_t &ncurrent, const double dcurrent, const Eigen::Vector3d& centroid_current,
+                                                bool has_centroid_current, const Plane* plane_lm){
+        if (!plane_lm)
+        {
+            return false;
+        }
         Eigen::Vector3d nw=plane_lm->get_normal();
         double dw=plane_lm->get_offset();
 
-        if(ncurrent.dot(nw) > mConfig.plane_match_thr_ang && std::abs(dcurrent-dw) < mConfig.plane_match_thr_d) return true;
-        else return false;
+        if(!align_plane_for_match(ncurrent, nw, dw, mConfig.plane_match_thr_ang))
+        {
+            return false;
+        }
+
+        const bool current_centroid_valid = has_centroid_current && has_valid_centroid(centroid_current);
+        if (current_centroid_valid)
+        {
+            const double dist_current_to_lm = point_plane_distance(nw, dw, centroid_current);
+            if (dist_current_to_lm >= mConfig.plane_match_thr_d)
+            {
+                return false;
+            }
+
+            const Vec3_t lm_centroid = plane_lm->getCentroid();
+            if (has_valid_centroid(lm_centroid))
+            {
+                const double dist_lm_to_current = point_plane_distance(ncurrent, dcurrent, lm_centroid);
+                return dist_lm_to_current < mConfig.plane_match_thr_d;
+            }
+            return true;
+        }
+
+        return std::abs(dcurrent-dw) < mConfig.plane_match_thr_d;
     }
 
     bool LocalGlassPlaneMapping::checkPlaneMatch(const keyplane* pln1, const keyplane* pln2){
@@ -205,8 +290,30 @@ namespace ORB_SLAM3
         Eigen::Vector3d n2=pln2->get_normal();
         double d2=pln2->get_offset();
 
-        if(n1.dot(n2) > mConfig.plane_match_thr_ang && std::abs(d1-d2) < mConfig.plane_match_thr_d) return true;
-        else return false;
+        if(!align_plane_for_match(n1, n2, d2, mConfig.plane_match_thr_ang))
+        {
+            return false;
+        }
+
+        const Vec3_t c1 = pln1->getCentroid();
+        const Vec3_t c2 = pln2->getCentroid();
+        const bool has_c1 = has_valid_centroid(c1);
+        const bool has_c2 = has_valid_centroid(c2);
+        if (has_c1 && has_c2)
+        {
+            return point_plane_distance(n2, d2, c1) < mConfig.plane_match_thr_d &&
+                   point_plane_distance(n1, d1, c2) < mConfig.plane_match_thr_d;
+        }
+        if (has_c1)
+        {
+            return point_plane_distance(n2, d2, c1) < mConfig.plane_match_thr_d;
+        }
+        if (has_c2)
+        {
+            return point_plane_distance(n1, d1, c2) < mConfig.plane_match_thr_d;
+        }
+
+        return std::abs(d1-d2) < mConfig.plane_match_thr_d;
     }
 
     bool fit_plane_from_cluster(const pcl::PointCloud<pcl::PointXYZRGBA>::Ptr& cloud,
@@ -648,7 +755,7 @@ namespace ORB_SLAM3
             {
                 continue;
             }
-            if (checkPlaneMatch(n_w, d_w, plane_lm))
+            if (checkPlaneMatch(n_w, d_w, centroid_w, has_centroid_w, plane_lm))
             {
                 matched_plane = plane_lm;
                 break;
@@ -689,7 +796,7 @@ namespace ORB_SLAM3
         int candidate_idx = -1;
         for (int i = 0; i < mPlaneCandidates.size(); ++i)
         {
-            if (checkPlaneMatch(n_w, d_w, mPlaneCandidates[i]))
+            if (checkPlaneMatch(n_w, d_w, centroid_w, has_centroid_w, mPlaneCandidates[i]))
             {
                 candidate_idx = static_cast<int>(i);
                 break;
@@ -699,7 +806,7 @@ namespace ORB_SLAM3
         // 如果没找到，则新建一个候选平面加入池子，返回false
         if (candidate_idx < 0)
         {
-            StartPlaneCandidate(n_w, d_w, keyfrm, keypln_idx);
+            StartPlaneCandidate(n_w, d_w, centroid_w, has_centroid_w, keyfrm, keypln_idx);
             return false;
         }
 
@@ -710,6 +817,8 @@ namespace ORB_SLAM3
         {
             candidate.normal = n_w;
             candidate.offset = d_w;
+            candidate.centroid = centroid_w;
+            candidate.has_centroid = has_centroid_w && has_valid_centroid(centroid_w);
             candidate.consecutive += 1;
             candidate.last_kf_id = keyfrm->mnId;
             candidate.observations.emplace_back(keyfrm, keypln_idx);
@@ -729,7 +838,7 @@ namespace ORB_SLAM3
         }
         else
         {
-            StartPlaneCandidate(n_w, d_w, keyfrm, keypln_idx);
+            StartPlaneCandidate(n_w, d_w, centroid_w, has_centroid_w, keyfrm, keypln_idx);
             return false;
         }
 

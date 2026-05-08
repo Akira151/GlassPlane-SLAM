@@ -779,8 +779,8 @@ bool TwoViewReconstruction::ReconstructH(
         return false;
     }
 
-    vector<Eigen::Matrix3f> vR;
-    vector<Eigen::Vector3f> vt, vn;
+    vector<Eigen::Matrix3f, Eigen::aligned_allocator<Eigen::Matrix3f>> vR;
+    vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> vt, vn;
     vR.reserve(8);
     vt.reserve(8);
     vn.reserve(8);

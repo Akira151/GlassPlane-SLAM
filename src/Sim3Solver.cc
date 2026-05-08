@@ -414,7 +414,7 @@ void Sim3Solver::ComputeSim3(Eigen::Matrix3f &P1, Eigen::Matrix3f &P2)
 
 void Sim3Solver::CheckInliers()
 {
-    vector<Eigen::Vector2f> vP1im2, vP2im1;
+    Sim3Solver::AlignedVector2fVector vP1im2, vP2im1;
     Project(mvX3Dc2,vP2im1,mT12i,pCamera1);
     Project(mvX3Dc1,vP1im2,mT21i,pCamera2);
 
@@ -458,7 +458,7 @@ float Sim3Solver::GetEstimatedScale()
     return mBestScale;
 }
 
-void Sim3Solver::Project(const vector<Eigen::Vector3f> &vP3Dw, vector<Eigen::Vector2f> &vP2D, Eigen::Matrix4f Tcw, GeometricCamera* pCamera)
+void Sim3Solver::Project(const AlignedVector3fVector &vP3Dw, AlignedVector2fVector &vP2D, Eigen::Matrix4f Tcw, GeometricCamera* pCamera)
 {
     Eigen::Matrix3f Rcw = Tcw.block<3,3>(0,0);
     Eigen::Vector3f tcw = Tcw.block<3,1>(0,3);
@@ -474,7 +474,7 @@ void Sim3Solver::Project(const vector<Eigen::Vector3f> &vP3Dw, vector<Eigen::Vec
     }
 }
 
-void Sim3Solver::FromCameraToImage(const vector<Eigen::Vector3f> &vP3Dc, vector<Eigen::Vector2f> &vP2D, GeometricCamera* pCamera)
+void Sim3Solver::FromCameraToImage(const AlignedVector3fVector &vP3Dc, AlignedVector2fVector &vP2D, GeometricCamera* pCamera)
 {
     vP2D.clear();
     vP2D.reserve(vP3Dc.size());

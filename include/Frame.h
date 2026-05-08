@@ -37,6 +37,7 @@
 #include <opencv2/opencv.hpp>
 
 #include "Eigen/Core"
+#include "Eigen/StdVector"
 #include "sophus/se3.hpp"
 
 namespace ORB_SLAM3
@@ -342,7 +343,7 @@ public:
 
     //Triangulated stereo observations using as reference the left camera. These are
     //computed during ComputeStereoFishEyeMatches
-    std::vector<Eigen::Vector3f> mvStereo3Dpoints;
+    std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> mvStereo3Dpoints;
 
     //Grid for the right image
     std::vector<std::size_t> mGridRight[FRAME_GRID_COLS][FRAME_GRID_ROWS];

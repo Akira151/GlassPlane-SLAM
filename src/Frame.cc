@@ -26,6 +26,7 @@
 #include "ORBmatcher.h"
 #include "GeometricCamera.h"
 
+#include <cmath>
 #include <thread>
 #include <include/CameraModels/Pinhole.h>
 #include <include/CameraModels/KannalaBrandt8.h>
@@ -222,7 +223,7 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
     Nright = -1;
     mvLeftToRightMatch = vector<int>(0);
     mvRightToLeftMatch = vector<int>(0);
-    mvStereo3Dpoints = vector<Eigen::Vector3f>(0);
+    mvStereo3Dpoints.clear();
     monoLeft = -1;
     monoRight = -1;
 
@@ -335,7 +336,7 @@ Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeSt
     Nright = -1;
     mvLeftToRightMatch = vector<int>(0);
     mvRightToLeftMatch = vector<int>(0);
-    mvStereo3Dpoints = vector<Eigen::Vector3f>(0);
+    mvStereo3Dpoints.clear();
     monoLeft = -1;
     monoRight = -1;
 
@@ -446,7 +447,7 @@ Frame::Frame(const cv::Mat &imGray, const cv::Mat &imRGB, const cv::Mat &imDepth
     Nright = -1;
     mvLeftToRightMatch = vector<int>(0);
     mvRightToLeftMatch = vector<int>(0);
-    mvStereo3Dpoints = vector<Eigen::Vector3f>(0);
+    mvStereo3Dpoints.clear();
     monoLeft = -1;
     monoRight = -1;
 
@@ -554,7 +555,7 @@ Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extra
     Nright = -1;
     mvLeftToRightMatch = vector<int>(0);
     mvRightToLeftMatch = vector<int>(0);
-    mvStereo3Dpoints = vector<Eigen::Vector3f>(0);
+    mvStereo3Dpoints.clear();
     monoLeft = -1;
     monoRight = -1;
 
@@ -1479,6 +1480,9 @@ void Frame::ComputeStereoFromRGBD(const cv::Mat &imDepth)
     mvuRight = vector<float>(N,-1);
     mvDepth = vector<float>(N,-1);
 
+    if(imDepth.empty() || imDepth.type() != CV_32FC1)
+        return;
+
     for(int i=0; i<N; i++)
     {
         /** <li> 从<b>未矫正的特征点</b>提供的坐标来读取深度图像拿到这个点的深度数据 </li> */
@@ -1487,15 +1491,17 @@ void Frame::ComputeStereoFromRGBD(const cv::Mat &imDepth)
         const cv::KeyPoint &kpU = mvKeysUn[i];
 
         // 获取其横纵坐标，注意 NOTICE 是校正前的特征点的
-        const float &v = kp.pt.y;
-        const float &u = kp.pt.x;
+        const int v = cvRound(kp.pt.y);
+        const int u = cvRound(kp.pt.x);
+        if(u < 0 || u >= imDepth.cols || v < 0 || v >= imDepth.rows)
+            continue;
 
         // 从深度图像中获取这个特征点对应的深度点
         // NOTE 从这里看对深度图像进行去畸变处理是没有必要的,我们依旧可以直接通过未矫正的特征点的坐标来直接拿到深度数据
         const float d = imDepth.at<float>(v,u);
 
         // 如果获取到的深度点合法(d>0), 那么就保存这个特征点的深度,并且计算出等效的\在假想的右图中该特征点所匹配的特征点的横坐标
-        if(d>0)
+        if(std::isfinite(d) && d>0)
         {
             mvDepth[i] = d;
             mvuRight[i] = kpU.pt.x-mbf/d;
@@ -1656,7 +1662,7 @@ void Frame::ComputeStereoFishEyeMatches()
     mvRightToLeftMatch = vector<int>(Nright,-1);
     mvDepth = vector<float>(Nleft,-1.0f);
     mvuRight = vector<float>(Nleft,-1);
-    mvStereo3Dpoints = vector<Eigen::Vector3f>(Nleft);
+    mvStereo3Dpoints.assign(Nleft, Eigen::Vector3f::Zero());
     mnCloseMPs = 0;
 
     //Perform a brute force between Keypoint in the left and right image

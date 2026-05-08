@@ -22,6 +22,7 @@
 
 #include <opencv2/opencv.hpp>
 #include <vector>
+#include <Eigen/StdVector>
 
 #include "KeyFrame.h"
 
@@ -34,6 +35,9 @@ class Sim3Solver
 {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    typedef std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> AlignedVector3fVector;
+    typedef std::vector<Eigen::Vector2f, Eigen::aligned_allocator<Eigen::Vector2f>> AlignedVector2fVector;
+
     Sim3Solver(KeyFrame* pKF1, KeyFrame* pKF2, const std::vector<MapPoint*> &vpMatched12, const bool bFixScale = true,
                const vector<KeyFrame*> vpKeyFrameMatchedMP = vector<KeyFrame*>());
 
@@ -57,8 +61,8 @@ protected:
 
     void CheckInliers();
 
-    void Project(const std::vector<Eigen::Vector3f> &vP3Dw, std::vector<Eigen::Vector2f> &vP2D, Eigen::Matrix4f Tcw, GeometricCamera* pCamera);
-    void FromCameraToImage(const std::vector<Eigen::Vector3f> &vP3Dc, std::vector<Eigen::Vector2f> &vP2D, GeometricCamera* pCamera);
+    void Project(const AlignedVector3fVector &vP3Dw, AlignedVector2fVector &vP2D, Eigen::Matrix4f Tcw, GeometricCamera* pCamera);
+    void FromCameraToImage(const AlignedVector3fVector &vP3Dc, AlignedVector2fVector &vP2D, GeometricCamera* pCamera);
 
 
 protected:
@@ -67,8 +71,8 @@ protected:
     KeyFrame* mpKF1;
     KeyFrame* mpKF2;
 
-    std::vector<Eigen::Vector3f> mvX3Dc1;
-    std::vector<Eigen::Vector3f> mvX3Dc2;
+    AlignedVector3fVector mvX3Dc1;
+    AlignedVector3fVector mvX3Dc2;
     std::vector<MapPoint*> mvpMapPoints1;
     std::vector<MapPoint*> mvpMapPoints2;
     std::vector<MapPoint*> mvpMatches12;
@@ -106,8 +110,8 @@ protected:
     std::vector<size_t> mvAllIndices;
 
     // Projections
-    std::vector<Eigen::Vector2f> mvP1im1;
-    std::vector<Eigen::Vector2f> mvP2im2;
+    AlignedVector2fVector mvP1im1;
+    AlignedVector2fVector mvP2im2;
 
     // RANSAC probability
     double mRansacProb;

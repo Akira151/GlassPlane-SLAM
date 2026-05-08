@@ -18,6 +18,7 @@
 
 #include "Optimizer.h"
 
+#include <cmath>
 #include <complex>
 
 #include <Eigen/StdVector>
@@ -44,6 +45,24 @@ namespace ORB_SLAM3
 bool sortByVal(const pair<MapPoint *, int> &a, const pair<MapPoint *, int> &b)
 {
     return (a.second < b.second);
+}
+
+namespace
+{
+bool IsFiniteKeyPoint(const cv::KeyPoint& kp)
+{
+    return std::isfinite(kp.pt.x) && std::isfinite(kp.pt.y) && kp.octave >= 0;
+}
+
+bool IsValidOctave(const Frame* pFrame, const cv::KeyPoint& kp)
+{
+    return kp.octave >= 0 && kp.octave < static_cast<int>(pFrame->mvInvLevelSigma2.size());
+}
+
+bool IsFiniteWorldPoint(const Eigen::Vector3f& xw)
+{
+    return xw.allFinite();
+}
 }
 
 /**************************************以下为单帧优化**************************************************************/
@@ -116,8 +135,15 @@ int Optimizer::PoseOptimization(Frame *pFrame)
         {
             MapPoint *pMP = pFrame->mvpMapPoints[i];
             // 如果这个地图点还存在没有被剔除掉
-            if (pMP)
+            if (pMP && !pMP->isBad())
             {
+                const Eigen::Vector3f Xw = pMP->GetWorldPos();
+                if (!IsFiniteWorldPoint(Xw))
+                {
+                    pFrame->mvpMapPoints[i] = static_cast<MapPoint*>(NULL);
+                    continue;
+                }
+
                 // Conventional SLAM
                 //  不存在相机2，则有可能为单目与双目
                 if (!pFrame->mpCamera2)
@@ -126,12 +152,13 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     // 单目情况，因为双目模式下pFrame->mvuRight[i]会大于0
                     if (pFrame->mvuRight[i] < 0)
                     {
-                        nInitialCorrespondences++;
-                        pFrame->mvbOutlier[i] = false;
-
                         // 对这个地图点的观测，也就是去畸变像素坐标
                         Eigen::Matrix<double, 2, 1> obs;
                         const cv::KeyPoint &kpUn = pFrame->mvKeysUn[i];
+                        if (!pFrame->mpCamera || !IsFiniteKeyPoint(kpUn) || !IsValidOctave(pFrame, kpUn))
+                            continue;
+                        nInitialCorrespondences++;
+                        pFrame->mvbOutlier[i] = false;
                         obs << kpUn.pt.x, kpUn.pt.y;
                         // 新建节点,注意这个节点的只是优化位姿Pose
                         ORB_SLAM3::EdgeSE3ProjectXYZOnlyPose *e = new ORB_SLAM3::EdgeSE3ProjectXYZOnlyPose();
@@ -149,7 +176,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                         // 设置相机
                         e->pCamera = pFrame->mpCamera;
                         // 地图点的空间位置,作为迭代的初始值，因为是一元边，所以不以节点的形式出现
-                        e->Xw = pMP->GetWorldPos().cast<double>();
+                        e->Xw = Xw.cast<double>();
 
                         optimizer.addEdge(e);
 
@@ -158,14 +185,15 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     }
                     else // 双目
                     {
-                        nInitialCorrespondences++;
-                        pFrame->mvbOutlier[i] = false;
-
                         // SET EDGE
                         //  观测多了一项右目的坐标
                         Eigen::Matrix<double, 3, 1> obs;
                         const cv::KeyPoint &kpUn = pFrame->mvKeysUn[i];
                         const float &kp_ur = pFrame->mvuRight[i];
+                        if (!IsFiniteKeyPoint(kpUn) || !IsValidOctave(pFrame, kpUn) || !std::isfinite(kp_ur))
+                            continue;
+                        nInitialCorrespondences++;
+                        pFrame->mvbOutlier[i] = false;
                         obs << kpUn.pt.x, kpUn.pt.y, kp_ur;
                         // 新建节点,注意这里也是只优化位姿
                         g2o::EdgeStereoSE3ProjectXYZOnlyPose *e = new g2o::EdgeStereoSE3ProjectXYZOnlyPose();
@@ -187,7 +215,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                         e->cx = pFrame->cx;
                         e->cy = pFrame->cy;
                         e->bf = pFrame->mbf;
-                        e->Xw = pMP->GetWorldPos().cast<double>();
+                        e->Xw = Xw.cast<double>();
 
                         optimizer.addEdge(e);
 
@@ -198,13 +226,14 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                 // SLAM with respect a rigid body
                 else  // 两个相机
                 {
-                    nInitialCorrespondences++;
-
                     cv::KeyPoint kpUn;
                     // 总数N = 相机1所有特征点数量+相机2所有特征点数量
                     if (i < pFrame->Nleft)
                     { // Left camera observation
                         kpUn = pFrame->mvKeys[i];
+                        if (!pFrame->mpCamera || !IsFiniteKeyPoint(kpUn) || !IsValidOctave(pFrame, kpUn))
+                            continue;
+                        nInitialCorrespondences++;
 
                         pFrame->mvbOutlier[i] = false;
 
@@ -223,7 +252,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                         rk->setDelta(deltaMono);
 
                         e->pCamera = pFrame->mpCamera;
-                        e->Xw = pMP->GetWorldPos().cast<double>();
+                        e->Xw = Xw.cast<double>();
 
                         optimizer.addEdge(e);
 
@@ -233,6 +262,9 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                     else
                     { // Right camera observation
                         kpUn = pFrame->mvKeysRight[i - pFrame->Nleft];
+                        if (!pFrame->mpCamera2 || !IsFiniteKeyPoint(kpUn) || !IsValidOctave(pFrame, kpUn))
+                            continue;
+                        nInitialCorrespondences++;
 
                         Eigen::Matrix<double, 2, 1> obs;
                         obs << kpUn.pt.x, kpUn.pt.y;
@@ -251,7 +283,7 @@ int Optimizer::PoseOptimization(Frame *pFrame)
                         rk->setDelta(deltaMono);
 
                         e->pCamera = pFrame->mpCamera2;
-                        e->Xw = pMP->GetWorldPos().cast<double>();
+                        e->Xw = Xw.cast<double>();
 
                         e->mTrl = g2o::SE3Quat(
                             pFrame->GetRelativePoseTrl().unit_quaternion().cast<double>(), pFrame->GetRelativePoseTrl().translation().cast<double>());
@@ -4549,7 +4581,7 @@ void Optimizer::OptimizeEssentialGraph(
     vector<g2o::VertexSim3Expmap *> vpVertices(nMaxKFid + 1); // 存放节点，没用，还占地方
 
     // 调试用，暂时不去管
-    vector<Eigen::Vector3d> vZvectors(nMaxKFid + 1); // For debugging
+    vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d>> vZvectors(nMaxKFid + 1); // For debugging
     Eigen::Vector3d z_vec;
     z_vec << 0.0, 0.0, 1.0;
     // 两个关键帧之间共视关系的权重（也就是共视点的数目，单目x1，双目/rgbd x2）的最小值

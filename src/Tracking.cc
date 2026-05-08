@@ -28,10 +28,14 @@
 #include "KannalaBrandt8.h"
 #include "MLPnPsolver.h"
 #include "GeometricTools.h"
+#include "landmark_plane.h"
 
 #include "System.h"
 
+#include <cmath>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 
 #include <mutex>
 #include <chrono>
@@ -53,6 +57,149 @@ using namespace std;
 
 namespace ORB_SLAM3
 {
+
+namespace
+{
+
+struct PlaneLandmarkMetric
+{
+    unsigned int id = 0;
+    Vec3_t normal = Vec3_t::Zero();
+    double offset = 0.0;
+    Vec3_t center = Vec3_t::Zero();
+    size_t observations = 0;
+    size_t map_points = 0;
+};
+
+double clampUnit(double value)
+{
+    if (value < -1.0)
+    {
+        return -1.0;
+    }
+    if (value > 1.0)
+    {
+        return 1.0;
+    }
+    return value;
+}
+
+double pointPlaneDistance(const Vec3_t &normal, const double offset, const Vec3_t &point)
+{
+    const double normal_norm = normal.norm();
+    if (!normal.allFinite() || !point.allFinite() || !std::isfinite(offset) || normal_norm <= 1e-12)
+    {
+        return std::numeric_limits<double>::infinity();
+    }
+    return std::abs(normal.dot(point) + offset) / normal_norm;
+}
+
+bool makePlaneLandmarkMetric(Plane *plane, PlaneLandmarkMetric &metric)
+{
+    if (!plane || !plane->is_valid())
+    {
+        return false;
+    }
+
+    Vec3_t normal = plane->get_normal();
+    const double normal_norm = normal.norm();
+    const double offset = plane->get_offset();
+    const Vec3_t center = plane->getCentroid();
+    if (!normal.allFinite() || !center.allFinite() || !std::isfinite(offset) ||
+        !std::isfinite(normal_norm) || normal_norm <= std::numeric_limits<double>::epsilon())
+    {
+        return false;
+    }
+
+    normal /= normal_norm;
+    metric.id = plane->_id;
+    metric.normal = normal;
+    metric.offset = offset / normal_norm;
+    metric.center = center;
+    metric.observations = plane->ObservationCount();
+    metric.map_points = plane->get_num_map_points();
+    return true;
+}
+
+void PrintCurrentMapPlaneLandmarkPairMetrics(Map *current_map,
+                                             const unsigned long frame_id,
+                                             const double timestamp)
+{
+    if (!current_map)
+    {
+        return;
+    }
+
+    const std::vector<Plane *> planes = current_map->get_all_landmark_planes();
+    std::vector<PlaneLandmarkMetric> metrics;
+    metrics.reserve(planes.size());
+    for (Plane *plane : planes)
+    {
+        PlaneLandmarkMetric metric;
+        if (makePlaneLandmarkMetric(plane, metric))
+        {
+            metrics.push_back(metric);
+        }
+    }
+
+    const std::streamsize old_precision = std::cout.precision();
+    const std::ios::fmtflags old_flags = std::cout.flags();
+    std::cout << std::fixed << std::setprecision(6);
+    std::cout << "[PLANE_LANDMARK_PAIR][frame " << frame_id
+              << "][timestamp " << timestamp
+              << "][map " << current_map->GetId()
+              << "] total_planes=" << planes.size()
+              << " valid_planes=" << metrics.size() << std::endl;
+
+    constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+    for (size_t i = 0; i < metrics.size(); ++i)
+    {
+        for (size_t j = i + 1; j < metrics.size(); ++j)
+        {
+            const PlaneLandmarkMetric &p1 = metrics[i];
+            const PlaneLandmarkMetric &p2 = metrics[j];
+            const double normal_dot = clampUnit(std::fabs(p1.normal.dot(p2.normal)));
+            const double angle_deg = std::acos(normal_dot) * kRadToDeg;
+            const double plane_distance_diff = std::fabs(std::fabs(p1.offset) - std::fabs(p2.offset));
+            const double center1_to_plane2_distance = pointPlaneDistance(p2.normal, p2.offset, p1.center);
+            const double center2_to_plane1_distance = pointPlaneDistance(p1.normal, p1.offset, p2.center);
+            const double center_plane_distance_max =
+                center1_to_plane2_distance > center2_to_plane1_distance ?
+                center1_to_plane2_distance : center2_to_plane1_distance;
+
+            std::cout << "  pair plane " << p1.id << " - " << p2.id
+                      << " angle_deg=" << angle_deg
+                      << " plane_distance_diff=" << plane_distance_diff
+                      << " center1_to_plane2_distance=" << center1_to_plane2_distance
+                      << " center2_to_plane1_distance=" << center2_to_plane1_distance
+                      << " center_plane_distance_max=" << center_plane_distance_max
+                      << " center1=(" << p1.center(0) << "," << p1.center(1) << "," << p1.center(2) << ")"
+                      << " center2=(" << p2.center(0) << "," << p2.center(1) << "," << p2.center(2) << ")"
+                      << " obs=" << p1.observations << "," << p2.observations
+                      << " map_points=" << p1.map_points << "," << p2.map_points
+                      << std::endl;
+        }
+    }
+
+    std::cout.flags(old_flags);
+    std::cout.precision(old_precision);
+}
+
+struct PlaneLandmarkMetricPrinter
+{
+    Atlas *atlas = nullptr;
+    unsigned long frame_id = 0;
+    double timestamp = 0.0;
+
+    ~PlaneLandmarkMetricPrinter()
+    {
+        PrintCurrentMapPlaneLandmarkPairMetrics(atlas ? atlas->GetCurrentMap() : nullptr,
+                                                frame_id,
+                                                timestamp);
+    }
+};
+
+} // namespace
 
 void Tracking::GetTrajectorySnapshot(list<Sophus::SE3f> &relativeFramePoses,
                                      list<KeyFrame*> &references,
@@ -2107,6 +2254,8 @@ void Tracking::Track()
     {
         cout << "ERROR: There is not an active map in the atlas" << endl;
     }
+    const PlaneLandmarkMetricPrinter plane_landmark_metric_printer{
+        mpAtlas, mCurrentFrame.mnId, mCurrentFrame.mTimeStamp};
 
     // Step 2 处理时间戳异常的情况
     if(mState!=NO_IMAGES_YET)
