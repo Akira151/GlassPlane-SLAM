@@ -16,6 +16,9 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+#ifndef PCL_NO_PRECOMPILE
+#define PCL_NO_PRECOMPILE
+#endif
 #include "pointcloudmapping.h"
 #include <KeyFrame.h>
 #include <opencv2/highgui/highgui.hpp>
@@ -35,7 +38,6 @@ PointCloudMapping::PointCloudMapping(double resolution_)
 {
     cout<<"PointCloudMapping start, resolution="<<resolution_<<endl;
     this->resolution = resolution_;
-    // voxel.setLeafSize( resolution, resolution, resolution);
     // globalMap = boost::make_shared< PointCloud >( );
 
     cloud_voxel = std::make_shared<PointCloud>(); 
@@ -54,16 +56,22 @@ PointCloudMapping::PointCloudMapping(double resolution_)
     cout<<"PointCloudMapping end"<<endl;
 }
 
+PointCloudMapping::~PointCloudMapping()
+{
+    shutdown();
+}
+
 void PointCloudMapping::shutdown()
 {
-    if(!mbEnableViewer || !viewerThread)
+    unique_lock<mutex> joinLock(shutdownJoinMutex);
+    if(!mbEnableViewer || !viewerThread || !viewerThread->joinable())
         return;
 
     {
         unique_lock<mutex> lck(shutDownMutex);
         shutDownFlag = true;
-        keyFrameUpdated.notify_one();
     }
+    keyFrameUpdated.notify_all();
     viewerThread->join();
 }
 
@@ -117,7 +125,7 @@ pcl::PointCloud< PointCloudMapping::PointT >::Ptr PointCloudMapping::generatePoi
             float d = depth.ptr<float>(m)[n];
             
 
-            if (d < 0.01 ){
+            if (!std::isfinite(d) || d < 0.01 || d > 4.0){
                 zero_count++;
                 continue;
             }
@@ -129,14 +137,21 @@ pcl::PointCloud< PointCloudMapping::PointT >::Ptr PointCloudMapping::generatePoi
             p.b = color.ptr<uchar>(m)[n*3];
             p.g = color.ptr<uchar>(m)[n*3+1];
             p.r = color.ptr<uchar>(m)[n*3+2];
+            p.a = 255;
 
             tmp->points.push_back(p);
             valid_count++;
         }
     }
 
+    tmp->width = tmp->points.size();
+    tmp->height = 1;
+    tmp->is_dense = false;
+
     Eigen::Isometry3d T = ORB_SLAM3::Converter::toSE3Quat( kf->GetPose() );
     pcl::transformPointCloud( *tmp, *cloud, T.inverse().matrix());
+    cloud->width = cloud->points.size();
+    cloud->height = 1;
     cloud->is_dense = false;
     std::cout << "depth sample: " << depth.at<float>(240,320) << " m" << std::endl;
 
@@ -192,16 +207,26 @@ void PointCloudMapping::viewer()
                 {
                     PointCloud::Ptr p = generatePointCloud(keyframes[i], colorImgs[i], depthImgs[i]);
                     *globalMap += *p;
+                    globalMap->width = globalMap->points.size();
+                    globalMap->height = 1;
+                    globalMap->is_dense = false;
                 }
 
-                // if(!globalMap->empty())
-                // {
-                //     PointCloud::Ptr filtered(new PointCloud());
-                //     voxel.setLeafSize(this->resolution, this->resolution, this->resolution);
-                //     voxel.setInputCloud(globalMap);
-                //     voxel.filter(*filtered);
-                //     globalMap->swap(*filtered);
-                // }
+                if(!globalMap->empty())
+                {
+                    PointCloud::Ptr filtered(new PointCloud());
+                    pcl::VoxelGrid<PointT> voxel;
+                    voxel.setLeafSize(
+                        static_cast<float>(resolution),
+                        static_cast<float>(resolution),
+                        static_cast<float>(resolution));
+                    voxel.setInputCloud(globalMap);
+                    voxel.filter(*filtered);
+                    filtered->width = filtered->points.size();
+                    filtered->height = 1;
+                    filtered->is_dense = false;
+                    globalMap = filtered;
+                }
             }
 
             lastKeyframeSize = N;
@@ -228,6 +253,9 @@ void PointCloudMapping::viewer()
         {
             *display += *plane_to_add;
         }
+        display->width = display->points.size();
+        display->height = 1;
+        display->is_dense = false;
         // viewer.showCloud( display );
         // cout << "show global map, size=" << display->points.size() << endl;
 

@@ -114,7 +114,9 @@ double ComputePlaneInfoWeight(const size_t nPointEdges, const size_t nPlaneEdges
         return 1.0;
 
     const double edgeRatio = static_cast<double>(nPointEdges) / static_cast<double>(nPlaneEdges);
-    const double weight = 50.0 * edgeRatio;
+    // const double weight = 50.0 * edgeRatio;
+    const double weight = 1000;
+    std::cout<<"dynamic plane edge weight: "<<50.0 * edgeRatio<<std::endl;
     return std::min(20000.0, std::max(100.0, weight));
 }
 

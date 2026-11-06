@@ -43,6 +43,7 @@ public:
     typedef pcl::PointCloud<PointT> PointCloud;
 
     PointCloudMapping( double resolution_ );
+    ~PointCloudMapping();
 
     // 插入一个keyframe，会更新一次地图
     void insertKeyFrame( KeyFrame* kf, cv::Mat& color, cv::Mat& depth );
@@ -60,6 +61,7 @@ protected:
 
     bool    shutDownFlag    =false;
     mutex   shutDownMutex;
+    mutex   shutdownJoinMutex;
 
     condition_variable  keyFrameUpdated;
     mutex               keyFrameUpdateMutex;

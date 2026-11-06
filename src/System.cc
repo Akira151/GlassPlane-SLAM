@@ -110,6 +110,7 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
                const bool bUseViewer, const int initFr, const string &strSequence, bool bUsingGlassPlane, bool bUsingGlassLine):
     mSensor(sensor), mpViewer(static_cast<Viewer*>(NULL)), mbReset(false), mbResetActiveMap(false),
     mbActivateLocalizationMode(false), mbDeactivateLocalizationMode(false), mbShutDown(false),
+    mbWaitAfterFinished(false),
     mbUsingGlassLine(bUsingGlassLine),mbUsingGlassPlane(bUsingGlassPlane)
 {
     // Output welcome message
@@ -144,6 +145,8 @@ System::System(const string &strVocFile, const string &strSettingsFile, const eS
        cerr << "Failed to open settings file at: " << strSettingsFile << endl;
        exit(-1);
     }
+
+    mbWaitAfterFinished = ReadOptionalInt(fsSettings, "System.WaitAfterFinished", 0) != 0;
 
     // 查看配置文件版本，不同版本有不同处理方法
     cv::FileNode node = fsSettings["File.version"];
@@ -745,6 +748,14 @@ void System::ResetActiveMap()
 
 void System::Shutdown()
 {
+    if(mbWaitAfterFinished)
+    {
+        cout << endl
+             << "System.WaitAfterFinished is enabled. Press Enter to shutdown and exit..."
+             << endl;
+        cin.get();
+    }
+
     {
         unique_lock<mutex> lock(mMutexReset);
         mbShutDown = true;
@@ -784,6 +795,8 @@ void System::Shutdown()
         usleep(5000);
     }
 
+    if(mpPointCloudMapping)
+        mpPointCloudMapping->shutdown();
 
     if(!mStrSaveAtlasToFile.empty())
     {

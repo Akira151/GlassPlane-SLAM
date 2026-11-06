@@ -254,6 +254,7 @@ private:
 
     // Shutdown flag
     bool mbShutDown;
+    bool mbWaitAfterFinished;
 
     // Tracking state
     int mTrackingState;
