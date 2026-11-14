@@ -1,0 +1,145 @@
+%YAML:1.0
+
+#--------------------------------------------------------------------------------------------
+# Camera Parameters. Adjust them!
+#--------------------------------------------------------------------------------------------
+File.version: "1.0"
+Camera.type: "PinHole"
+Camera1.fx: 387.331
+Camera1.fy: 386.891
+Camera1.cx: 321.615
+#Camera.cx: 16
+Camera1.cy: 243.45
+
+
+Camera1.k1: 0.0548236
+Camera1.k2: 0.0643121
+Camera1.p1: 0.0004991
+Camera1.p2: 0.000543
+
+Camera.width: 640
+Camera.height: 480
+
+# Camera frames per second 
+Camera.fps: 30
+
+# Color order of the images (0: BGR, 1: RGB. It is ignored if images are grayscale)
+Camera.RGB: 1
+
+# Close/Far threshold. Baseline times.
+Stereo.ThDepth: 40.0
+Stereo.b: 0.0747
+
+# Depth map values factor
+RGBD.DepthMapFactor: 1000.0
+
+#--------------------------------------------------------------------------------------------
+# ORB Parameters
+#--------------------------------------------------------------------------------------------
+
+# ORB Extractor: Number of features per image
+ORBextractor.nFeatures: 1000
+
+# ORB Extractor: Scale factor between levels in the scale pyramid 	
+ORBextractor.scaleFactor: 1.2
+
+# ORB Extractor: Number of levels in the scale pyramid	
+ORBextractor.nLevels: 8
+
+# ORB Extractor: Fast threshold
+# Image is divided in a grid. At each cell FAST are extracted imposing a minimum response.
+# Firstly we impose iniThFAST. If no corners are detected we impose a lower value minThFAST
+# You can lower these values if your images have low contrast			
+ORBextractor.iniThFAST: 20
+ORBextractor.minThFAST: 7
+
+#--------------------------------------------------------------------------------------------
+# Viewer Parameters
+#--------------------------------------------------------------------------------------------
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0
+
+PointCloudMapping.Resolution: 0.05
+System.WaitAfterFinished: 1
+
+# Ablation modes:
+# 1 exclude glass feature points, no plane constraint
+# 2 assign glass surface depth to glass feature points, no plane constraint
+# 3 exclude glass feature points, with plane constraint
+# 4 raw feature points, with plane constraint
+# 5 4, but with only single ransac
+GlassAblation.Mode: 4
+GlassAblation.FeatureMaskThreshold: 250
+
+# Glass plane mapping thresholds
+GlassPlaneMapping.FrameMaskWhiteThreshold: 120
+GlassPlaneMapping.PointCloudMaskThreshold: 128
+GlassPlaneMapping.MinFrameGlassRatio: 0.0
+GlassPlaneMapping.MinBlockGlassRatio: 0.0
+GlassPlaneMapping.MergedPlaneGroupMinGlassRatio: 0.10
+GlassPlaneMapping.RansacMaxIterations: 80
+GlassPlaneMapping.RansacMinPoints: 10
+GlassPlaneMapping.RansacMaxFitPoints: 0
+GlassPlaneMapping.RansacWinframeExpandRadius: 10
+GlassPlaneMapping.RansacDistanceThreshold: 0.08
+GlassPlaneMapping.MinRansacInlierRatio: 0.30
+GlassPlaneMapping.MaxRansacMeanDistance: 0.0
+GlassPlaneMapping.PlaneAttachDist: 0.30
+
+#plane matching
+GlassPlaneMapping.PlaneMatchAngleCos: 0.9
+GlassPlaneMapping.PlaneMatchDistance: 0.5
+GlassPlaneMapping.PlaneMergeMinNormalDot: 0.85
+GlassPlaneMapping.PlaneMergeDepthThreshold: 0.20
+GlassPlaneMapping.SupportedFrameSideBandPx: 8
+GlassPlaneMapping.SupportedFrameSideMinCount: 30
+GlassPlaneMapping.SupportedFrameSideMinSpanRatio: 0.25
+GlassPlaneMapping.SupportedFrameSideImageBorderMarginPx: 2
+GlassPlaneMapping.MinObservationSupportedFrameSides: 1
+GlassPlaneMapping.LongFrameExtentMinSpanRatio: 0.70
+
+
+# For keyplane insert into map
+GlassPlaneMapping.MinPlaneConsecutiveObs: 10
+
+# Debug print switches. DebugPrintAll is a master switch ANDed with each item.
+GlassPlaneMapping.DebugPrintAll: 1
+GlassPlaneMapping.DebugPrintRansacStats: 1
+GlassPlaneMapping.DebugPrintKfTiming: 1
+GlassPlaneMapping.DebugPrintFrameGlassRatio: 1
+GlassPlaneMapping.DebugPrintPlaneWarnings: 1
+GlassPlaneMapping.DebugPrintRansacFailures: 1
+GlassPlaneMapping.DebugPrintPlaneGroup: 1
+GlassPlaneMapping.DebugPrintPlaneLandmark: 1
+GlassPlaneMapping.DebugPrintPlaneLandmarkPair: 1
+GlassPlaneMapping.DebugPrintLocalBa: 0
+GlassPlaneMapping.DebugPrintPlaneBaWeight: 0
+GlassPlaneMapping.DebugPrintPlaneBaDetails: 0
+GlassPlaneMapping.DebugPrintPointCloud: 0
+GlassPlaneMapping.DebugPrintPlaneDraw: 1
+
+# For runtime control. Every RansacKeyframeInterval keyframes must have one glass plane estimation.
+GlassPlaneMapping.RansacKeyframeInterval: 3
+#GlassPlaneMapping.PlaneCandidateMaxKfGap: 3
+
+# For orbslam2-GSD--------------------------------------------------------------------------------------------
+GSD.ORBMinMaskValue: 250
+GSD.ORBMaxMaskValue: 5.0
+GSD.ORBDepthGapRange: 0.3
+GSD.ORBMaxDepthWeightAll: 5.0
+GSD.ORBMaxDepthWeightGlass: 1.0
+
+GSD.PCMMinMaskValue: 127.5
+GSD.PCMMaxMaskValue: 5.0
+GSD.PCMPixelRange: 2
+GSD.PCMDepthGapRangeXY: 0.1
+GSD.PCMDepthGapRangeGlass: 0.1
+GSD.PCMMaxDepthWeight: 2.0
